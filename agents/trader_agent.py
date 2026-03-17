@@ -94,6 +94,14 @@ class TraderAgent:
         self.bad_combos: dict[str, float] = {}
         self.hot_coins: list[str] = []  # Coins the coach says are winners
 
+        # Competitive drive
+        self.original_style = style
+        self.original_weights = dict(self.weights)
+        self.original_threshold = self.threshold
+        self._last_rank_check = 0.0
+        self._my_rank = 10  # assume middle of pack
+        self._desperation = 0.0  # 0.0 = calm, 1.0 = full panic mode
+
         # Stats
         self.signals_received: int = 0
         self.trades_sent: int = 0
@@ -112,19 +120,97 @@ class TraderAgent:
             self._portfolio_loop(),
             self._idle_cash_loop(),
             self._position_rotation_loop(),
+            self._competitive_drive_loop(),
         )
 
     async def _idle_cash_loop(self):
         """Continuously check for idle cash and deploy it immediately."""
         while True:
-            await asyncio.sleep(3)
+            await asyncio.sleep(1)
             await self._deploy_idle_cash()
 
-    async def _position_rotation_loop(self):
-        """Position rotation: take profits at +15%, cut losses at -8%.
-        After selling, idle_cash_loop redeploys into the next best opportunity."""
+    async def _competitive_drive_loop(self):
+        """Check my ranking every 5 seconds. If I'm losing, adapt strategy
+        to be more like the leaders. If I'm winning, double down on what works."""
         while True:
             await asyncio.sleep(5)
+            self._adapt_to_competition()
+
+    def _adapt_to_competition(self):
+        """The core competitive drive: check rank, adapt strategy."""
+        my_state = self.portfolio_mgr.traders.get(self.trader_id)
+        if not my_state:
+            return
+
+        # Rank myself
+        ranked = sorted(
+            self.portfolio_mgr.traders.values(),
+            key=lambda t: t.total_value, reverse=True,
+        )
+        total_traders = len(ranked)
+        self._my_rank = next(
+            (i + 1 for i, t in enumerate(ranked) if t.trader_id == self.trader_id),
+            total_traders,
+        )
+
+        # Desperation scales from 0 (1st place) to 1.0 (last place)
+        self._desperation = max(0.0, (self._my_rank - 1) / max(total_traders - 1, 1))
+
+        # Find the #1 trader
+        leader = ranked[0] if ranked else None
+        if not leader or leader.trader_id == self.trader_id:
+            # I'M the leader — revert to my original style, it's working
+            self.weights = dict(self.original_weights)
+            self.threshold = self.original_threshold
+            self._desperation = 0.0
+            return
+
+        # --- ADAPT BASED ON HOW FAR BEHIND I AM ---
+
+        if self._desperation > 0.7:
+            # BOTTOM TIER: Abandon my style, copy the leader's approach
+            # Find leader's style and steal their weights
+            leader_style = leader.style
+            leader_weights = STYLE_WEIGHTS.get(leader_style, {})
+            if leader_weights:
+                # Blend: 70% leader's weights, 30% mine
+                for ind in self.weights:
+                    leader_w = leader_weights.get(ind, 0.05)
+                    self.weights[ind] = 0.7 * leader_w + 0.3 * self.original_weights.get(ind, 0.05)
+                # Normalize
+                total = sum(self.weights.values())
+                if total > 0:
+                    self.weights = {k: v / total for k, v in self.weights.items()}
+            # Be much more aggressive — lower threshold to take more trades
+            self.threshold = max(0.08, self.original_threshold * 0.5)
+            # Faster cooldown when desperate
+            self.cooldown = max(0.5, STYLE_COOLDOWNS.get(self.original_style, 2) * 0.3)
+
+        elif self._desperation > 0.4:
+            # MID PACK: Partially adapt — blend toward leader's strategy
+            leader_style = leader.style
+            leader_weights = STYLE_WEIGHTS.get(leader_style, {})
+            if leader_weights:
+                for ind in self.weights:
+                    leader_w = leader_weights.get(ind, 0.05)
+                    self.weights[ind] = 0.4 * leader_w + 0.6 * self.original_weights.get(ind, 0.05)
+                total = sum(self.weights.values())
+                if total > 0:
+                    self.weights = {k: v / total for k, v in self.weights.items()}
+            # Slightly more aggressive
+            self.threshold = max(0.10, self.original_threshold * 0.75)
+            self.cooldown = STYLE_COOLDOWNS.get(self.original_style, 2) * 0.7
+
+        else:
+            # TOP TIER: I'm doing well — stay the course with slight tweaks
+            self.weights = dict(self.original_weights)
+            self.threshold = self.original_threshold
+            self.cooldown = STYLE_COOLDOWNS.get(self.original_style, 2)
+
+    async def _position_rotation_loop(self):
+        """Fast rotation: grab profits, ditch losers, redeploy into winners."""
+        while True:
+            await asyncio.sleep(2)
             await self._check_rotations()
 
     async def _check_rotations(self):
@@ -142,14 +228,15 @@ class TraderAgent:
             price_change_pct = (price - pos.entry_price) / pos.entry_price
             margin_return_pct = price_change_pct * pos.leverage
 
-            # UP >10% on margin → take profit, rotate into next opportunity
-            # At 40x, 10% margin = 0.25% price move — achievable
-            if margin_return_pct > 0.10:
-                symbols_to_sell.append((sym, "profit_rotate"))
+            # SCALP STRATEGY: tiny profit target, wide loss tolerance
+            # Prices oscillate — grab small wins constantly, let losers recover
+            # At 30x, 1% margin profit = 0.03% price move (happens every few seconds)
+            profit_target = 0.01 if self._desperation < 0.5 else 0.005
+            loss_limit = -0.40 if self._desperation < 0.5 else -0.30
 
-            # DOWN >20% on margin → cut loss, find something better
-            # At 40x, 20% margin = 0.5% price drop — give room to recover
-            elif margin_return_pct < -0.20:
+            if margin_return_pct > profit_target:
+                symbols_to_sell.append((sym, "profit_rotate"))
+            elif margin_return_pct < loss_limit:
                 symbols_to_sell.append((sym, "loss_rotate"))
 
         for sym, reason in symbols_to_sell:
@@ -293,17 +380,23 @@ class TraderAgent:
         return [tid for tid, _ in ranked[:5] if tid != self.trader_id]
 
     def _steal_winning_coins(self) -> list[str]:
-        """Look at what the top performers are holding and steal their picks."""
+        """Look at what the top performers are holding and steal their picks.
+        When desperate, heavily weight the #1 leader's coins."""
         top_ids = self._get_top_performers()
         winning_coins: dict[str, float] = {}
-        for tid in top_ids:
+        for i, tid in enumerate(top_ids):
             t_state = self.portfolio_mgr.traders.get(tid)
             if not t_state:
                 continue
+            # Weight by rank — #1 gets 3x weight, #2 gets 2x, etc.
+            rank_weight = max(1.0, 3.0 - i * 0.5)
+            # When desperate, #1's coins are even more important
+            if self._desperation > 0.5 and i == 0:
+                rank_weight *= 2.0
             for sym, pos in t_state.positions.items():
                 if pos.unrealized_pnl > 0:
-                    winning_coins[sym] = winning_coins.get(sym, 0) + pos.unrealized_pnl
-        # Sort by total profit across top performers
+                    winning_coins[sym] = winning_coins.get(sym, 0) + pos.unrealized_pnl * rank_weight
+        # Sort by weighted profit across top performers
         return sorted(winning_coins, key=winning_coins.get, reverse=True)
 
     def _competitive_score_adjust(self, symbol: str, base_score: float) -> float:

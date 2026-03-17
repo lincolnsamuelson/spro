@@ -533,8 +533,11 @@ function render(d) {
   document.getElementById('pool-start').textContent = '$' + fmt(d.chart.starting_cash);
   document.getElementById('pool-positions').textContent = d.positions.length;
   const netPnl = d.scoreboard.reduce((sum, s) => sum + s.pnl, 0);
+  const totalStart = d.chart.starting_cash * d.scoreboard.length;
+  const pnlPct = totalStart > 0 ? (netPnl / totalStart * 100) : 0;
   const pnlEl = document.getElementById('pool-pnl');
-  pnlEl.textContent = (netPnl >= 0 ? '+' : '') + '$' + fmt(netPnl);
+  pnlEl.innerHTML = (netPnl >= 0 ? '+' : '') + '$' + fmt(netPnl) +
+    ' <span style="font-size:16px;">(' + (pnlPct >= 0 ? '+' : '') + fmt(pnlPct, 1) + '%)</span>';
   pnlEl.className = 'val ' + pnlClass(netPnl);
 
   // Chart — dynamic Y axis from all chart data points
