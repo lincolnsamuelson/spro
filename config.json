@@ -15,7 +15,9 @@
       "morpho", "pump-fun"
     ],
     "starting_balance": 200.0,
-    "mode": "paper"
+    "mode": "paper",
+    "default_leverage": 10,
+    "max_leverage": 20
   },
   "market_data": {
     "poll_interval_seconds": 15,
@@ -33,24 +35,41 @@
     "ema_slow": 21
   },
   "strategy": {
-    "signal_threshold": 0.50,
-    "cooldown_seconds": 90,
+    "signal_threshold": 0.40,
+    "cooldown_seconds": 60,
     "weights": {
-      "rsi": 0.25,
-      "macd": 0.30,
-      "bollinger": 0.20,
-      "ema_crossover": 0.15,
-      "sentiment": 0.10
+      "rsi": 0.15,
+      "macd": 0.20,
+      "bollinger": 0.15,
+      "ema_crossover": 0.10,
+      "sentiment": 0.05,
+      "momentum": 0.20,
+      "volatility": 0.15
     }
   },
   "risk": {
-    "max_risk_per_trade": 0.05,
+    "max_risk_per_trade": 0.25,
     "max_positions": 9999,
-    "max_drawdown": 0.25,
-    "default_stop_loss_pct": 0.03,
-    "default_take_profit_pct": 0.02,
+    "max_drawdown": 0.50,
+    "default_stop_loss_pct": 0.02,
+    "trailing_stop_pct": 0.015,
     "simulated_slippage_pct": 0.001,
-    "min_cash_reserve": 0.5
+    "min_cash_reserve": 0.10
+  },
+  "volatility": {
+    "lookback_periods": 20,
+    "min_volatility_pct": 0.5,
+    "top_n_volatile": 15
+  },
+  "momentum": {
+    "breakout_threshold_pct": 1.5,
+    "volume_spike_multiplier": 2.0,
+    "acceleration_periods": 5
+  },
+  "compounding": {
+    "reinvest_delay_seconds": 5,
+    "scale_factor": 1.5,
+    "win_streak_bonus": 0.1
   },
   "dashboard": {
     "refresh_interval_seconds": 3

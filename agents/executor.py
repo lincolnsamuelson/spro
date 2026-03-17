@@ -7,12 +7,18 @@ from event_bus import EventBus
 
 
 class Executor:
+    """Leveraged paper trade executor with trailing stops.
+    Simulates futures/margin trading. Positions use margin (actual cash locked)
+    and leverage to control larger notional positions. Trailing stops lock in
+    profits as price moves favorably."""
+
     def __init__(self, bus: EventBus, config: dict):
         self.bus = bus
         self.config = config
         self.queue = bus.subscribe("executor")
         self.risk_cfg = config["risk"]
         self.slippage = self.risk_cfg["simulated_slippage_pct"]
+        self.trailing_stop_pct = self.risk_cfg["trailing_stop_pct"]
         self.portfolio = Portfolio(
             cash=config["trading"]["starting_balance"],
             total_value=config["trading"]["starting_balance"],
@@ -34,23 +40,32 @@ class Executor:
                 self.portfolio.cash = state["cash"]
                 self.portfolio.realized_pnl = state["realized_pnl"]
                 self.portfolio.peak_value = state["peak_value"]
+                self.portfolio.win_streak = state.get("win_streak", 0)
+                self.portfolio.total_wins = state.get("total_wins", 0)
+                self.portfolio.total_losses = state.get("total_losses", 0)
                 for sym, pos_data in state.get("positions", {}).items():
                     self.portfolio.positions[sym] = Position(
                         symbol=sym,
                         side=Side(pos_data["side"]),
                         entry_price=pos_data["entry_price"],
                         quantity=pos_data["quantity"],
+                        leverage=pos_data.get("leverage", 1),
                         stop_loss=pos_data["stop_loss"],
-                        take_profit=pos_data["take_profit"],
+                        trailing_stop=pos_data.get("trailing_stop", pos_data["stop_loss"]),
+                        highest_price=pos_data.get("highest_price", pos_data["entry_price"]),
+                        margin=pos_data.get("margin", 0),
                     )
             except (json.JSONDecodeError, KeyError):
                 pass
 
     def _save_state(self):
         state = {
-            "cash": round(self.portfolio.cash, 2),
-            "realized_pnl": round(self.portfolio.realized_pnl, 2),
-            "peak_value": round(self.portfolio.peak_value, 2),
+            "cash": round(self.portfolio.cash, 4),
+            "realized_pnl": round(self.portfolio.realized_pnl, 4),
+            "peak_value": round(self.portfolio.peak_value, 4),
+            "win_streak": self.portfolio.win_streak,
+            "total_wins": self.portfolio.total_wins,
+            "total_losses": self.portfolio.total_losses,
             "positions": {},
         }
         for sym, pos in self.portfolio.positions.items():
@@ -58,14 +73,16 @@ class Executor:
                 "side": pos.side.value,
                 "entry_price": pos.entry_price,
                 "quantity": pos.quantity,
+                "leverage": pos.leverage,
                 "stop_loss": pos.stop_loss,
-                "take_profit": pos.take_profit,
+                "trailing_stop": pos.trailing_stop,
+                "highest_price": pos.highest_price,
+                "margin": pos.margin,
             }
         with open(self._state_path(), "w") as f:
             json.dump(state, f, indent=2)
 
     async def run(self):
-        # Publish initial portfolio state
         await self._publish_portfolio()
         while True:
             event = await self.queue.get()
@@ -82,45 +99,72 @@ class Executor:
         price = payload["price"]
         self.latest_prices[symbol] = price
 
-        # Check stop-loss and take-profit
-        if symbol in self.portfolio.positions:
-            pos = self.portfolio.positions[symbol]
-            if pos.side == Side.BUY:
-                if price <= pos.stop_loss:
-                    await self._close_position(symbol, price, "stop_loss")
-                elif price >= pos.take_profit:
-                    await self._close_position(symbol, price, "take_profit")
+        if symbol not in self.portfolio.positions:
+            return
 
-        # Update unrealized P&L
+        pos = self.portfolio.positions[symbol]
+
+        if pos.side == Side.BUY:
+            # Update highest price for trailing stop
+            if price > pos.highest_price:
+                pos.highest_price = price
+                # Move trailing stop up
+                new_trailing = price * (1 - self.trailing_stop_pct)
+                if new_trailing > pos.trailing_stop:
+                    pos.trailing_stop = new_trailing
+
+            # Check liquidation: with leverage, if price drops enough to wipe margin
+            loss_pct = (pos.entry_price - price) / pos.entry_price
+            leveraged_loss_pct = loss_pct * pos.leverage
+            if leveraged_loss_pct >= 0.90:  # 90% of margin lost = liquidated
+                await self._close_position(symbol, price, "liquidated")
+                return
+
+            # Check trailing stop (replaces fixed take-profit)
+            if price <= pos.trailing_stop and pos.trailing_stop > pos.stop_loss:
+                await self._close_position(symbol, price, "trailing_stop")
+            # Check hard stop loss
+            elif price <= pos.stop_loss:
+                await self._close_position(symbol, price, "stop_loss")
+
         self._update_portfolio_value()
 
     async def _execute_order(self, payload: dict):
         symbol = payload["symbol"]
         side = payload["side"]
         price = payload["price"]
+        leverage = payload.get("leverage", self.config["trading"]["default_leverage"])
         now = time.time()
 
         if side == Side.BUY.value:
-            # Apply slippage (buy at slightly higher price)
             fill_price = price * (1 + self.slippage)
-            quantity = payload["quantity"]
-            cost = fill_price * quantity
+            margin = payload.get("margin", 0)
 
-            if cost > self.portfolio.cash:
-                quantity = (self.portfolio.cash * 0.99) / fill_price
-                cost = fill_price * quantity
+            if margin > self.portfolio.cash - 0.10:
+                margin = self.portfolio.cash - 0.10
 
-            if cost < 1.0:
+            if margin < 0.50:
                 return
 
-            self.portfolio.cash -= cost
+            # Leveraged quantity
+            notional = margin * leverage
+            quantity = notional / fill_price
+
+            # Set initial trailing stop at entry - stop_loss_pct
+            stop_loss = payload.get("stop_loss", fill_price * (1 - self.risk_cfg["default_stop_loss_pct"]))
+            trailing_stop = stop_loss  # Starts at stop loss, moves up with price
+
+            self.portfolio.cash -= margin
             self.portfolio.positions[symbol] = Position(
                 symbol=symbol,
                 side=Side.BUY,
                 entry_price=fill_price,
                 quantity=quantity,
-                stop_loss=payload["stop_loss"],
-                take_profit=payload["take_profit"],
+                leverage=leverage,
+                stop_loss=stop_loss,
+                trailing_stop=trailing_stop,
+                highest_price=fill_price,
+                margin=margin,
             )
 
             trade = {
@@ -128,9 +172,11 @@ class Executor:
                 "symbol": symbol,
                 "side": "BUY",
                 "quantity": round(quantity, 8),
-                "price": round(fill_price, 2),
-                "cost": round(cost, 2),
-                "confidence": payload["confidence"],
+                "price": round(fill_price, 6),
+                "margin": round(margin, 4),
+                "leverage": leverage,
+                "notional": round(notional, 2),
+                "confidence": payload.get("confidence", 0),
             }
 
         elif side == Side.SELL.value:
@@ -138,11 +184,22 @@ class Executor:
                 return
             pos = self.portfolio.positions[symbol]
             fill_price = price * (1 - self.slippage)
-            proceeds = fill_price * pos.quantity
-            pnl = (fill_price - pos.entry_price) * pos.quantity
 
-            self.portfolio.cash += proceeds
-            self.portfolio.realized_pnl += pnl
+            # P&L with leverage
+            price_change_pct = (fill_price - pos.entry_price) / pos.entry_price
+            leveraged_pnl = pos.margin * price_change_pct * pos.leverage
+            returned_capital = pos.margin + leveraged_pnl
+
+            self.portfolio.cash += max(returned_capital, 0)
+            self.portfolio.realized_pnl += leveraged_pnl
+
+            if leveraged_pnl > 0:
+                self.portfolio.win_streak += 1
+                self.portfolio.total_wins += 1
+            else:
+                self.portfolio.win_streak = 0
+                self.portfolio.total_losses += 1
+
             del self.portfolio.positions[symbol]
 
             trade = {
@@ -150,9 +207,10 @@ class Executor:
                 "symbol": symbol,
                 "side": "SELL",
                 "quantity": round(pos.quantity, 8),
-                "price": round(fill_price, 2),
-                "proceeds": round(proceeds, 2),
-                "pnl": round(pnl, 2),
+                "price": round(fill_price, 6),
+                "margin_returned": round(returned_capital, 4),
+                "pnl": round(leveraged_pnl, 4),
+                "leverage": pos.leverage,
             }
         else:
             return
@@ -173,11 +231,25 @@ class Executor:
             return
         pos = self.portfolio.positions[symbol]
         fill_price = price * (1 - self.slippage)
-        proceeds = fill_price * pos.quantity
-        pnl = (fill_price - pos.entry_price) * pos.quantity
 
-        self.portfolio.cash += proceeds
-        self.portfolio.realized_pnl += pnl
+        price_change_pct = (fill_price - pos.entry_price) / pos.entry_price
+        leveraged_pnl = pos.margin * price_change_pct * pos.leverage
+        returned_capital = pos.margin + leveraged_pnl
+
+        if reason == "liquidated":
+            returned_capital = 0
+            leveraged_pnl = -pos.margin
+
+        self.portfolio.cash += max(returned_capital, 0)
+        self.portfolio.realized_pnl += leveraged_pnl
+
+        if leveraged_pnl > 0:
+            self.portfolio.win_streak += 1
+            self.portfolio.total_wins += 1
+        else:
+            self.portfolio.win_streak = 0
+            self.portfolio.total_losses += 1
+
         del self.portfolio.positions[symbol]
 
         trade = {
@@ -186,9 +258,10 @@ class Executor:
             "side": "SELL",
             "reason": reason,
             "quantity": round(pos.quantity, 8),
-            "price": round(fill_price, 2),
-            "proceeds": round(proceeds, 2),
-            "pnl": round(pnl, 2),
+            "price": round(fill_price, 6),
+            "margin_returned": round(max(returned_capital, 0), 4),
+            "pnl": round(leveraged_pnl, 4),
+            "leverage": pos.leverage,
         }
         self.trade_history.append(trade)
         self._update_portfolio_value()
@@ -205,9 +278,12 @@ class Executor:
         total = self.portfolio.cash
         for sym, pos in self.portfolio.positions.items():
             price = self.latest_prices.get(sym, pos.entry_price)
-            pos.unrealized_pnl = (price - pos.entry_price) * pos.quantity
-            total += price * pos.quantity
-        self.portfolio.total_value = round(total, 2)
+            price_change_pct = (price - pos.entry_price) / pos.entry_price if pos.entry_price > 0 else 0
+            pos.unrealized_pnl = pos.margin * price_change_pct * pos.leverage
+            # Position value = margin + unrealized P&L
+            pos_value = pos.margin + pos.unrealized_pnl
+            total += max(pos_value, 0)
+        self.portfolio.total_value = round(total, 4)
         if total > self.portfolio.peak_value:
             self.portfolio.peak_value = total
 
@@ -215,19 +291,25 @@ class Executor:
         await self.bus.publish(Event(
             type=EventType.PORTFOLIO_UPDATE,
             payload={
-                "cash": round(self.portfolio.cash, 2),
-                "total_value": round(self.portfolio.total_value, 2),
-                "realized_pnl": round(self.portfolio.realized_pnl, 2),
-                "peak_value": round(self.portfolio.peak_value, 2),
+                "cash": round(self.portfolio.cash, 4),
+                "total_value": round(self.portfolio.total_value, 4),
+                "realized_pnl": round(self.portfolio.realized_pnl, 4),
+                "peak_value": round(self.portfolio.peak_value, 4),
                 "position_symbols": list(self.portfolio.positions.keys()),
+                "win_streak": self.portfolio.win_streak,
+                "total_wins": self.portfolio.total_wins,
+                "total_losses": self.portfolio.total_losses,
                 "positions": {
                     sym: {
                         "side": pos.side.value,
                         "entry_price": pos.entry_price,
                         "quantity": pos.quantity,
-                        "unrealized_pnl": round(pos.unrealized_pnl, 2),
+                        "leverage": pos.leverage,
+                        "unrealized_pnl": round(pos.unrealized_pnl, 4),
+                        "margin": round(pos.margin, 4),
                         "stop_loss": pos.stop_loss,
-                        "take_profit": pos.take_profit,
+                        "trailing_stop": round(pos.trailing_stop, 6),
+                        "highest_price": pos.highest_price,
                     }
                     for sym, pos in self.portfolio.positions.items()
                 },

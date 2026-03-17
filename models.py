@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import time
 
 
@@ -9,11 +9,15 @@ class EventType(Enum):
     CANDLE = "candle"
     TECHNICAL_SIGNAL = "technical_signal"
     SENTIMENT_SIGNAL = "sentiment_signal"
+    MOMENTUM_SIGNAL = "momentum_signal"
+    VOLATILITY_RANKING = "volatility_ranking"
     TRADE_SIGNAL = "trade_signal"
     ORDER_REQUEST = "order_request"
     ORDER_FILLED = "order_filled"
+    POSITION_CLOSED = "position_closed"
     PORTFOLIO_UPDATE = "portfolio_update"
     STRATEGY_ADJUSTMENT = "strategy_adjustment"
+    COMPOUND_TRIGGER = "compound_trigger"
     HEARTBEAT = "heartbeat"
     SHUTDOWN = "shutdown"
 
@@ -59,7 +63,7 @@ class Order:
     price: float
     confidence: float
     stop_loss: float
-    take_profit: float
+    leverage: int = 1
     timestamp: float = field(default_factory=time.time)
 
 
@@ -69,9 +73,12 @@ class Position:
     side: Side
     entry_price: float
     quantity: float
+    leverage: int
     stop_loss: float
-    take_profit: float
+    trailing_stop: float
+    highest_price: float
     unrealized_pnl: float = 0.0
+    margin: float = 0.0  # actual capital locked
 
 
 @dataclass
@@ -81,3 +88,6 @@ class Portfolio:
     total_value: float = 0.0
     realized_pnl: float = 0.0
     peak_value: float = 0.0
+    win_streak: int = 0
+    total_wins: int = 0
+    total_losses: int = 0

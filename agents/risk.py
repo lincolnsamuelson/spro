@@ -4,6 +4,9 @@ from event_bus import EventBus
 
 
 class RiskManager:
+    """Aggressive risk manager. Max capital deployment, leverage enabled,
+    no position limits. Only halts on catastrophic drawdown."""
+
     def __init__(self, bus: EventBus, config: dict):
         self.bus = bus
         self.config = config
@@ -11,7 +14,7 @@ class RiskManager:
         self.risk_cfg = config["risk"]
         self.portfolio: Portfolio | None = None
         self.halted = False
-        self.min_cash = self.risk_cfg.get("min_cash_reserve", 0.50)
+        self.min_cash = self.risk_cfg.get("min_cash_reserve", 0.10)
 
     async def run(self):
         while True:
@@ -40,7 +43,7 @@ class RiskManager:
             k: True for k in payload.get("position_symbols", [])
         }
 
-        # Check max drawdown
+        # Only halt on catastrophic drawdown
         if self.portfolio.peak_value > 0:
             drawdown = (self.portfolio.peak_value - self.portfolio.total_value) / self.portfolio.peak_value
             if drawdown >= self.risk_cfg["max_drawdown"]:
@@ -56,6 +59,8 @@ class RiskManager:
         direction = payload["direction"]
         price = payload["price"]
         confidence = payload["confidence"]
+        leverage = payload.get("leverage", self.config["trading"]["default_leverage"])
+        multiplier = payload.get("multiplier", 1.0)
 
         # No duplicate positions
         if direction == Side.BUY.value and symbol in self.portfolio.positions:
@@ -65,45 +70,55 @@ class RiskManager:
         if direction == Side.SELL.value and symbol not in self.portfolio.positions:
             return
 
-        # Position sizing: deploy available cash aggressively
         stop_loss_pct = self.risk_cfg["default_stop_loss_pct"]
-        take_profit_pct = self.risk_cfg["default_take_profit_pct"]
 
         if direction == Side.BUY.value:
             available_cash = self.portfolio.cash - self.min_cash
-            if available_cash < 1.0:
+            if available_cash < 0.50:
                 return
 
-            # Size based on risk per trade, but also ensure we deploy capital
-            risk_amount = self.portfolio.total_value * self.risk_cfg["max_risk_per_trade"]
-            if stop_loss_pct > 0:
-                position_value = risk_amount / stop_loss_pct
-            else:
-                position_value = available_cash
-
-            # Use the smaller of risk-based size and available cash
-            position_value = min(position_value, available_cash)
-            if position_value < 1.0:
+            # Aggressive sizing: deploy large % of available cash per trade
+            # Scale by confidence and compounding multiplier
+            base_size = available_cash * self.risk_cfg["max_risk_per_trade"]
+            position_margin = base_size * confidence * multiplier
+            position_margin = min(position_margin, available_cash)
+            if position_margin < 0.50:
                 return
 
-            quantity = position_value / price
+            # With leverage, notional value is margin * leverage
+            notional_value = position_margin * leverage
+            quantity = notional_value / price
+
+            # Stop loss adjusted for leverage
+            # With 10x leverage, a 2% move against = 20% of margin lost
             stop_loss = price * (1 - stop_loss_pct)
-            take_profit = price * (1 + take_profit_pct)
-        else:
-            quantity = 0
-            stop_loss = 0
-            take_profit = 0
 
-        await self.bus.publish(Event(
-            type=EventType.ORDER_REQUEST,
-            payload={
-                "symbol": symbol,
-                "side": direction,
-                "quantity": quantity,
-                "price": price,
-                "confidence": confidence,
-                "stop_loss": round(stop_loss, 2),
-                "take_profit": round(take_profit, 2),
-            },
-            source="risk",
-        ))
+            await self.bus.publish(Event(
+                type=EventType.ORDER_REQUEST,
+                payload={
+                    "symbol": symbol,
+                    "side": direction,
+                    "quantity": quantity,
+                    "margin": round(position_margin, 4),
+                    "price": price,
+                    "confidence": confidence,
+                    "leverage": leverage,
+                    "stop_loss": round(stop_loss, 6),
+                },
+                source="risk",
+            ))
+        else:
+            await self.bus.publish(Event(
+                type=EventType.ORDER_REQUEST,
+                payload={
+                    "symbol": symbol,
+                    "side": direction,
+                    "quantity": 0,
+                    "margin": 0,
+                    "price": price,
+                    "confidence": confidence,
+                    "leverage": 1,
+                    "stop_loss": 0,
+                },
+                source="risk",
+            ))
