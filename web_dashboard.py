@@ -20,19 +20,49 @@ with open(CONFIG_FILE) as f:
 
 # Trader identities — must match portfolio_manager.py
 TRADER_COLORS = {
-    "blitz":    "#3b82f6",   # blue
-    "phantom":  "#8b5cf6",   # purple
-    "maverick": "#f97316",   # orange
-    "viper":    "#22c55e",   # green
-    "ghost":    "#ec4899",   # pink
+    "luna":     "#3b82f6",   # blue
+    "nova":     "#8b5cf6",   # purple
+    "aria":     "#f97316",   # orange
+    "jade":     "#22c55e",   # green
+    "ruby":     "#ec4899",   # pink
+    "stella":   "#ef4444",   # red
+    "ivy":      "#14b8a6",   # teal
+    "pearl":    "#f1f5f9",   # pearl white
+    "sage":     "#84cc16",   # lime
+    "aurora":   "#06b6d4",   # cyan
+    "ember":    "#f59e0b",   # amber
+    "violet":   "#a855f7",   # violet
+    "storm":    "#6366f1",   # indigo
+    "raven":    "#1e293b",   # slate dark
+    "phoenix":  "#dc2626",   # crimson
+    "celeste":  "#38bdf8",   # sky
+    "siren":    "#e879f9",   # fuchsia
+    "venom":    "#a3e635",   # lime green
+    "nyx":      "#818cf8",   # periwinkle
+    "echo":     "#fb923c",   # tangerine
 }
 
 TRADER_NAMES = {
-    "blitz":    "BLITZ",
-    "phantom":  "PHANTOM",
-    "maverick": "MAVERICK",
-    "viper":    "VIPER",
-    "ghost":    "GHOST",
+    "luna":     "LUNA",
+    "nova":     "NOVA",
+    "aria":     "ARIA",
+    "jade":     "JADE",
+    "ruby":     "RUBY",
+    "stella":   "STELLA",
+    "ivy":      "IVY",
+    "pearl":    "PEARL",
+    "sage":     "SAGE",
+    "aurora":   "AURORA",
+    "ember":    "EMBER",
+    "violet":   "VIOLET",
+    "storm":    "STORM",
+    "raven":    "RAVEN",
+    "phoenix":  "PHOENIX",
+    "celeste":  "CELESTE",
+    "siren":    "SIREN",
+    "venom":    "VENOM",
+    "nyx":      "NYX",
+    "echo":     "ECHO",
 }
 
 
@@ -321,8 +351,8 @@ HTML = r"""<!DOCTYPE html>
       <div class="val" id="pool-positions">--</div>
     </div>
     <div>
-      <div class="label">Leverage</div>
-      <div class="val" id="pool-leverage">--</div>
+      <div class="label">Net P&L</div>
+      <div class="val" id="pool-pnl">--</div>
     </div>
   </div>
 
@@ -371,7 +401,7 @@ function pnlClass(v) { return v>0?'positive':v<0?'negative':'neutral'; }
 
 let compChart = null;
 
-function renderChart(chartData) {
+function renderChart(chartData, yMin, yMax) {
   const ctx = document.getElementById('comp-chart');
   if (!ctx) return;
 
@@ -388,6 +418,8 @@ function renderChart(chartData) {
 
   if (compChart) {
     compChart.data.datasets = datasets;
+    compChart.options.scales.y.min = yMin;
+    compChart.options.scales.y.max = yMax;
     compChart.update('none');
     return;
   }
@@ -436,17 +468,19 @@ function renderChart(chartData) {
           type: 'time',
           time: {
             tooltipFormat: 'HH:mm:ss',
-            displayFormats: { second:'HH:mm:ss', minute:'HH:mm', hour:'HH:mm' },
+            unit: 'second',
+            stepSize: 5,
+            displayFormats: { second:'HH:mm:ss' },
           },
           grid: { color: '#1e293b22', drawBorder: false },
-          ticks: { color: '#64748b', font: { family: "'SF Mono', monospace", size: 10 }, maxTicksLimit: 10 },
+          ticks: { color: '#64748b', font: { family: "'SF Mono', monospace", size: 10 }, autoSkip: true, maxRotation: 45 },
         },
         y: {
           grid: { color: '#1e293b44', drawBorder: false },
           ticks: {
             color: '#64748b',
             font: { family: "'SF Mono', monospace", size: 10 },
-            callback: function(v) { return '$' + v.toFixed(2); },
+            callback: function(v) { return '$' + v.toFixed(0); },
           },
         },
       },
@@ -498,11 +532,20 @@ function render(d) {
   document.getElementById('pool-total').textContent = '$' + fmt(d.total_pool);
   document.getElementById('pool-start').textContent = '$' + fmt(d.chart.starting_cash);
   document.getElementById('pool-positions').textContent = d.positions.length;
-  document.getElementById('pool-leverage').textContent = d.config.default_leverage + 'x — ' + d.config.max_leverage + 'x';
+  const netPnl = d.scoreboard.reduce((sum, s) => sum + s.pnl, 0);
+  const pnlEl = document.getElementById('pool-pnl');
+  pnlEl.textContent = (netPnl >= 0 ? '+' : '') + '$' + fmt(netPnl);
+  pnlEl.className = 'val ' + pnlClass(netPnl);
 
-  // Chart
+  // Chart — dynamic Y axis from all chart data points
   if (d.chart.datasets.length > 0 && d.chart.datasets.some(ds => ds.points.length > 1)) {
-    renderChart(d.chart);
+    let allValues = d.scoreboard.map(s => s.equity);
+    d.chart.datasets.forEach(ds => {
+      ds.points.forEach(pt => allValues.push(pt.y));
+    });
+    const yMin = Math.max(0, Math.floor(Math.min(...allValues)) - 50);
+    const yMax = Math.ceil(Math.max(...allValues)) + 50;
+    renderChart(d.chart, yMin, yMax);
     const pts = d.chart.datasets.reduce((sum, ds) => sum + ds.points.length, 0);
     document.getElementById('chart-info').textContent = pts + ' data points';
   }

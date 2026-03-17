@@ -10,6 +10,7 @@ from agents.volatility import VolatilityScanner
 from agents.order_flow import OrderFlowAnalyst
 from agents.correlation import CorrelationAnalyst
 from agents.microstructure import MicrostructureAnalyst
+from agents.trend_researcher import TrendResearcher
 from agents.signal_router import SignalRouter
 from agents.trader_agent import TraderAgent
 from agents.portfolio_manager import PortfolioManager
@@ -19,13 +20,28 @@ from agents.compounder import Compounder
 from dashboard import Dashboard
 
 
-# 5 competitors — each starts with $50, same rules, different strategies
+# 20 competitors — each starts with equal capital, same rules, different strategies
 TRADER_POOL = [
-    {"id": "blitz",    "style": "momentum_chaser", "max_pos": 5},
-    {"id": "phantom",  "style": "momentum_chaser", "max_pos": 5},
-    {"id": "maverick", "style": "breakout_hunter",  "max_pos": 4},
-    {"id": "viper",    "style": "scalper",           "max_pos": 6},
-    {"id": "ghost",    "style": "mean_reverter",     "max_pos": 4},
+    {"id": "luna",     "style": "momentum_chaser",  "max_pos": 6},
+    {"id": "nova",     "style": "breakout_hunter",   "max_pos": 5},
+    {"id": "aria",     "style": "scalper",            "max_pos": 7},
+    {"id": "jade",     "style": "mean_reverter",      "max_pos": 4},
+    {"id": "ruby",     "style": "sentiment_rider",    "max_pos": 5},
+    {"id": "stella",   "style": "momentum_chaser",  "max_pos": 8},
+    {"id": "ivy",      "style": "breakout_hunter",   "max_pos": 6},
+    {"id": "pearl",    "style": "scalper",            "max_pos": 5},
+    {"id": "sage",     "style": "mean_reverter",      "max_pos": 4},
+    {"id": "aurora",   "style": "sentiment_rider",    "max_pos": 6},
+    {"id": "ember",    "style": "momentum_chaser",  "max_pos": 7},
+    {"id": "violet",   "style": "breakout_hunter",   "max_pos": 5},
+    {"id": "storm",    "style": "scalper",            "max_pos": 8},
+    {"id": "raven",    "style": "mean_reverter",      "max_pos": 4},
+    {"id": "phoenix",  "style": "sentiment_rider",    "max_pos": 6},
+    {"id": "celeste",  "style": "momentum_chaser",  "max_pos": 5},
+    {"id": "siren",    "style": "breakout_hunter",   "max_pos": 7},
+    {"id": "venom",    "style": "scalper",            "max_pos": 6},
+    {"id": "nyx",      "style": "mean_reverter",      "max_pos": 4},
+    {"id": "echo",     "style": "sentiment_rider",    "max_pos": 5},
 ]
 
 
@@ -35,7 +51,7 @@ async def main():
     per_trader = config["trading"]["starting_balance"]  # $50 each
 
     print("=" * 70)
-    print(f"  TRADER COMPETITION — 5 Competitors x ${per_trader:.0f} Each")
+    print(f"  TRADER COMPETITION — 20 Competitors x ${per_trader:.0f} Each")
     print("=" * 70)
     print(f"  Mode:       PAPER (simulated)")
     print(f"  Per Trader: ${per_trader:.2f}")
@@ -47,7 +63,7 @@ async def main():
     # === Competition Portfolio Manager ===
     portfolio_mgr = PortfolioManager(bus, config, trader_configs=TRADER_POOL)
 
-    # === 5 Competing Trader Agents ===
+    # === 20 Competing Trader Agents ===
     traders = []
     print("  Competitors:")
     for tc in TRADER_POOL:
@@ -95,6 +111,9 @@ async def main():
 
     microstructure = MicrostructureAnalyst(bus, config)
     print(f"   11.  Microstructure     — Round numbers, tick spikes")
+
+    trend = TrendResearcher(bus, config)
+    print(f"   12.  Trend Researcher   — Identifies rising coins & inflection points")
     print()
 
     # === Support Agents ===
@@ -105,7 +124,7 @@ async def main():
                      volatility, traders, config)
 
     print(f"  Support: Portfolio Manager, Auditor, Evaluator, Compounder, Dashboard")
-    print(f"  Total agents: {11 + len(traders) + 5}")
+    print(f"  Total agents: {12 + len(traders) + 5}")
     print()
     print("  COMPETITION ACTIVE. May the best trader win.\n")
 
@@ -122,6 +141,7 @@ async def main():
         asyncio.create_task(order_flow.run(), name="order_flow"),
         asyncio.create_task(correlation.run(), name="correlation"),
         asyncio.create_task(microstructure.run(), name="microstructure"),
+        asyncio.create_task(trend.run(), name="trend_researcher"),
         asyncio.create_task(router.run(), name="signal_router"),
         asyncio.create_task(portfolio_mgr.run(), name="portfolio_manager"),
         asyncio.create_task(auditor.run(), name="auditor"),

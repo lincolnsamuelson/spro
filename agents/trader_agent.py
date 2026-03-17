@@ -37,19 +37,19 @@ STYLE_WEIGHTS = {
 }
 
 STYLE_COOLDOWNS = {
-    "momentum_chaser": 3,
-    "breakout_hunter": 8,
-    "scalper": 1,
-    "mean_reverter": 15,
-    "sentiment_rider": 10,
+    "momentum_chaser": 1,
+    "breakout_hunter": 2,
+    "scalper": 0.5,
+    "mean_reverter": 3,
+    "sentiment_rider": 2,
 }
 
 STYLE_THRESHOLDS = {
-    "momentum_chaser": 0.22,
-    "breakout_hunter": 0.30,
-    "scalper": 0.18,
-    "mean_reverter": 0.35,
-    "sentiment_rider": 0.28,
+    "momentum_chaser": 0.15,
+    "breakout_hunter": 0.20,
+    "scalper": 0.10,
+    "mean_reverter": 0.25,
+    "sentiment_rider": 0.18,
 }
 
 
@@ -87,11 +87,12 @@ class TraderAgent:
         self.pending_symbols: set = set()
         self.compound_multiplier: float = 1.0
 
-        # Learned intelligence
+        # Learned intelligence from coaching
         self.blacklist: set = set()
         self.probation: set = set()
         self.leverage_overrides: dict[str, int] = {}
         self.bad_combos: dict[str, float] = {}
+        self.hot_coins: list[str] = []  # Coins the coach says are winners
 
         # Stats
         self.signals_received: int = 0
@@ -110,13 +111,67 @@ class TraderAgent:
             self._signal_loop(),
             self._portfolio_loop(),
             self._idle_cash_loop(),
+            self._position_rotation_loop(),
         )
 
     async def _idle_cash_loop(self):
         """Continuously check for idle cash and deploy it immediately."""
         while True:
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             await self._deploy_idle_cash()
+
+    async def _position_rotation_loop(self):
+        """Position rotation: take profits at +15%, cut losses at -8%.
+        After selling, idle_cash_loop redeploys into the next best opportunity."""
+        while True:
+            await asyncio.sleep(5)
+            await self._check_rotations()
+
+    async def _check_rotations(self):
+        my_state = self.portfolio_mgr.traders.get(self.trader_id)
+        if not my_state:
+            return
+
+        symbols_to_sell: list[tuple[str, str]] = []  # (symbol, reason)
+
+        for sym, pos in list(my_state.positions.items()):
+            price = self.latest_prices.get(sym)
+            if not price or price <= 0 or pos.entry_price <= 0:
+                continue
+
+            price_change_pct = (price - pos.entry_price) / pos.entry_price
+            margin_return_pct = price_change_pct * pos.leverage
+
+            # UP >10% on margin → take profit, rotate into next opportunity
+            # At 40x, 10% margin = 0.25% price move — achievable
+            if margin_return_pct > 0.10:
+                symbols_to_sell.append((sym, "profit_rotate"))
+
+            # DOWN >20% on margin → cut loss, find something better
+            # At 40x, 20% margin = 0.5% price drop — give room to recover
+            elif margin_return_pct < -0.20:
+                symbols_to_sell.append((sym, "loss_rotate"))
+
+        for sym, reason in symbols_to_sell:
+            price = self.latest_prices.get(sym, 0)
+            if price <= 0:
+                continue
+            self.trades_sent += 1
+            await self.bus.publish(Event(
+                type=EventType.ORDER_REQUEST,
+                payload={
+                    "symbol": sym,
+                    "side": Side.SELL.value,
+                    "quantity": 0,
+                    "margin": 0,
+                    "price": price,
+                    "confidence": 0.9 if reason == "profit_rotate" else 0.5,
+                    "leverage": 1,
+                    "stop_loss": 0,
+                    "trader_id": self.trader_id,
+                },
+                source=f"trader_{self.trader_id}",
+            ))
 
     async def _portfolio_loop(self):
         while True:
@@ -135,7 +190,8 @@ class TraderAgent:
                 self.latest_prices[event.payload["symbol"]] = event.payload["price"]
 
     def _on_fired(self, payload: dict):
-        """I got FIRED. Reset my brain, apply all learnings, start fresh."""
+        """I got FIRED. New agent takes over — fresh brain but inherits ALL
+        lessons so the same mistakes are never repeated."""
         self.signals.clear()
         self.last_trade_signal.clear()
         self.my_positions.clear()
@@ -146,6 +202,26 @@ class TraderAgent:
         self.weights = dict(STYLE_WEIGHTS.get(self.style, STYLE_WEIGHTS["momentum_chaser"]))
         self.cooldown = STYLE_COOLDOWNS.get(self.style, 5)
         self.threshold = STYLE_THRESHOLDS.get(self.style, 0.28)
+
+        # Load ALL accumulated learnings from disk so new agent never
+        # repeats previous agents' mistakes
+        import json, os
+        learnings_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "learnings.json")
+        try:
+            with open(learnings_path) as f:
+                learnings = json.load(f)
+            self.blacklist = set(learnings.get("blacklist", []))
+            self.probation = set(learnings.get("probation", []))
+            self.leverage_overrides = learnings.get("leverage_overrides", {})
+            # Build bad combos from learnings
+            bad = {}
+            for combo_key, stats in learnings.get("combos", {}).items():
+                total = stats.get("wins", 0) + stats.get("losses", 0)
+                if total >= 1 and stats.get("total_pnl", 0) < 0:
+                    bad[combo_key] = stats["total_pnl"]
+            self.bad_combos = bad
+        except Exception:
+            pass  # Keep whatever we had
 
     def _on_portfolio_update(self, payload: dict):
         my_syms = set()
@@ -208,37 +284,58 @@ class TraderAgent:
         combined = (self._coin_seed ^ sym_hash) % 1000
         return combined / 1000.0
 
+    def _get_top_performers(self) -> list[str]:
+        """Find the top 5 performing traders by total_value."""
+        ranked = sorted(
+            self.portfolio_mgr.traders.items(),
+            key=lambda x: x[1].total_value, reverse=True,
+        )
+        return [tid for tid, _ in ranked[:5] if tid != self.trader_id]
+
+    def _steal_winning_coins(self) -> list[str]:
+        """Look at what the top performers are holding and steal their picks."""
+        top_ids = self._get_top_performers()
+        winning_coins: dict[str, float] = {}
+        for tid in top_ids:
+            t_state = self.portfolio_mgr.traders.get(tid)
+            if not t_state:
+                continue
+            for sym, pos in t_state.positions.items():
+                if pos.unrealized_pnl > 0:
+                    winning_coins[sym] = winning_coins.get(sym, 0) + pos.unrealized_pnl
+        # Sort by total profit across top performers
+        return sorted(winning_coins, key=winning_coins.get, reverse=True)
+
     def _competitive_score_adjust(self, symbol: str, base_score: float) -> float:
-        """Adjust a signal score based on competitive intelligence."""
+        """Adjust a signal score based on competitive intelligence.
+        STEAL from winners, avoid losers' mistakes."""
         intel = self._get_rival_intel(symbol)
         score = base_score
 
-        # ANTI-HERDING: If 2+ rivals already hold this coin, big penalty
-        # Don't pile in where everyone else already is
-        if intel["holders"] >= 2:
-            score -= 0.15 * intel["holders"]
+        # With 20 traders, allow more overlap — only penalize heavy crowding
+        if intel["holders"] >= 8:
+            score -= 0.05 * (intel["holders"] - 7)
 
-        # AVOID LOSERS' PICKS: If losing rivals hold this coin, stay away
-        if intel["losing_holders"] > 0:
-            score -= 0.10 * intel["losing_holders"]
+        # AVOID LOSERS' PICKS: stay away from coins losing traders hold
+        if intel["losing_holders"] >= 3:
+            score -= 0.05 * intel["losing_holders"]
 
-        # CONTRARIAN BONUS: If a coin is being held by losers with bad P&L,
-        # the mean_reverter might actually want to short it
-        if self.style == "mean_reverter" and intel["losing_holders"] >= 2:
-            score += 0.05  # slight contrarian interest
+        # STEAL FROM WINNERS: If multiple winners are profiting on this, pile in
+        if intel["winning_holders"] >= 2:
+            score += 0.10 * min(intel["winning_holders"], 4)
+        elif intel["winning_holders"] == 1 and intel["losing_holders"] == 0:
+            score += 0.08
 
-        # WINNER AWARENESS: If the top-performing rival is profiting on this
-        # coin, small boost (follow the leader, but not too aggressively)
-        if intel["winning_holders"] > 0 and intel["losing_holders"] == 0:
+        # CONTRARIAN BONUS for mean reverters
+        if self.style == "mean_reverter" and intel["losing_holders"] >= 3:
             score += 0.05
 
-        # COIN AFFINITY: Natural preference based on trader identity
-        # This ensures traders gravitate to different coins
+        # COIN AFFINITY: slight preference to spread across different coins
         affinity = self._coin_affinity(symbol)
-        if affinity > 0.6:
-            score += 0.08  # prefer this coin
-        elif affinity < 0.3:
-            score -= 0.08  # avoid this coin (let others have it)
+        if affinity > 0.7:
+            score += 0.05
+        elif affinity < 0.2:
+            score -= 0.05
 
         return score
 
@@ -493,6 +590,29 @@ class TraderAgent:
                     leverage = self._get_leverage(symbol)
                     candidates.append((symbol, buy_score, leverage))
 
+        # STEAL from top performers — copy what winners are doing
+        stolen = self._steal_winning_coins()
+        for sc in stolen[:5]:
+            if (sc not in self.my_positions and
+                    sc not in self.pending_symbols and
+                    not self._is_blocked(sc) and
+                    self.latest_prices.get(sc)):
+                already_in = any(c[0] == sc for c in candidates)
+                if not already_in:
+                    lev = self._get_leverage(sc)
+                    candidates.append((sc, 0.7, lev))  # Top priority — stolen from winners
+
+        # Boost hot coins from the coach
+        for hc in self.hot_coins:
+            if (hc not in self.my_positions and
+                    hc not in self.pending_symbols and
+                    not self._is_blocked(hc) and
+                    self.latest_prices.get(hc)):
+                already_in = any(c[0] == hc for c in candidates)
+                if not already_in:
+                    lev = self._get_leverage(hc)
+                    candidates.append((hc, 0.6, lev))
+
         if not candidates:
             # Fallback: coins with price data, but prefer MY coins (affinity)
             all_syms = list(self.latest_prices.keys())
@@ -503,11 +623,11 @@ class TraderAgent:
                         sym not in self.pending_symbols and
                         not self._is_blocked(sym)):
                     intel = self._get_rival_intel(sym)
-                    # Skip coins where 2+ rivals already are
-                    if intel["holders"] >= 2:
+                    # Skip coins where 10+ rivals already are
+                    if intel["holders"] >= 10:
                         continue
                     lev = self._get_leverage(sym)
-                    candidates.append((sym, 0.3, lev))
+                    candidates.append((sym, 0.4, lev))
                     if len(candidates) >= slots:
                         break
 
@@ -536,3 +656,4 @@ class TraderAgent:
         self.probation = set(payload.get("probation", []))
         self.leverage_overrides = payload.get("leverage_overrides", {})
         self.bad_combos = payload.get("bad_combos", {})
+        self.hot_coins = payload.get("hot_coins", [])

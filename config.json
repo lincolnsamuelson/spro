@@ -14,10 +14,10 @@
       "okb", "kucoin-shares", "nexo", "flare-networks", "beldex",
       "morpho", "pump-fun"
     ],
-    "starting_balance": 200.0,
+    "starting_balance": 5000,
     "mode": "paper",
-    "default_leverage": 75,
-    "max_leverage": 125
+    "default_leverage": 40,
+    "max_leverage": 75
   },
   "market_data": {
     "poll_interval_seconds": 15,
@@ -36,7 +36,7 @@
   },
   "strategy": {
     "signal_threshold": 0.25,
-    "cooldown_seconds": 5,
+    "cooldown_seconds": 1,
     "weights": {
       "rsi": 0.12,
       "macd": 0.15,
@@ -54,9 +54,9 @@
     "max_risk_per_trade": 0.50,
     "max_positions": 9999,
     "max_drawdown": 0.70,
-    "default_stop_loss_pct": 0.004,
-    "trailing_stop_pct": 0.003,
-    "simulated_slippage_pct": 0.0001,
+    "default_stop_loss_pct": 0.03,
+    "trailing_stop_pct": 0.02,
+    "simulated_slippage_pct": 0.00005,
     "min_cash_reserve": 0.01
   },
   "volatility": {

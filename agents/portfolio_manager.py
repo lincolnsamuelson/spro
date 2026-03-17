@@ -9,19 +9,73 @@ from event_bus import EventBus
 
 # Competitor identities
 TRADER_COLORS = {
-    "blitz":    "#3b82f6",   # blue
-    "phantom":  "#8b5cf6",   # purple
-    "maverick": "#f97316",   # orange
-    "viper":    "#22c55e",   # green
-    "ghost":    "#ec4899",   # pink
+    "luna":     "#3b82f6",   # blue
+    "nova":     "#8b5cf6",   # purple
+    "aria":     "#f97316",   # orange
+    "jade":     "#22c55e",   # green
+    "ruby":     "#ec4899",   # pink
+    "stella":   "#ef4444",   # red
+    "ivy":      "#14b8a6",   # teal
+    "pearl":    "#f1f5f9",   # pearl white
+    "sage":     "#84cc16",   # lime
+    "aurora":   "#06b6d4",   # cyan
+    "ember":    "#f59e0b",   # amber
+    "violet":   "#a855f7",   # violet
+    "storm":    "#6366f1",   # indigo
+    "raven":    "#1e293b",   # slate dark
+    "phoenix":  "#dc2626",   # crimson
+    "celeste":  "#38bdf8",   # sky
+    "siren":    "#e879f9",   # fuchsia
+    "venom":    "#a3e635",   # lime green
+    "nyx":      "#818cf8",   # periwinkle
+    "echo":     "#fb923c",   # tangerine
 }
 
 TRADER_NAMES = {
-    "blitz":    "BLITZ",
-    "phantom":  "PHANTOM",
-    "maverick": "MAVERICK",
-    "viper":    "VIPER",
-    "ghost":    "GHOST",
+    "luna":     "LUNA",
+    "nova":     "NOVA",
+    "aria":     "ARIA",
+    "jade":     "JADE",
+    "ruby":     "RUBY",
+    "stella":   "STELLA",
+    "ivy":      "IVY",
+    "pearl":    "PEARL",
+    "sage":     "SAGE",
+    "aurora":   "AURORA",
+    "ember":    "EMBER",
+    "violet":   "VIOLET",
+    "storm":    "STORM",
+    "raven":    "RAVEN",
+    "phoenix":  "PHOENIX",
+    "celeste":  "CELESTE",
+    "siren":    "SIREN",
+    "venom":    "VENOM",
+    "nyx":      "NYX",
+    "echo":     "ECHO",
+}
+
+# Replacement names when agents get fired — each slot gets its own pool
+REPLACEMENT_NAMES = {
+    "luna":     ["SELENE", "DIANA", "CRESCENT", "MOONRISE", "ARTEMIS"],
+    "nova":     ["NEBULA", "STARDUST", "COSMICA", "SOLARIS", "ASTRA"],
+    "aria":     ["MELODY", "LYRICA", "SONATA", "CADENCE", "HARMONY"],
+    "jade":     ["EMERALD", "BERYL", "JASMINE", "WILLOW", "FERN"],
+    "ruby":     ["SCARLET", "GARNET", "CRIMSON", "ROSETTA", "BLUSH"],
+    "stella":   ["STARLA", "CELESTIA", "POLARIS", "VENUS", "ANDROMEDA"],
+    "ivy":      ["LAUREL", "BRIAR", "CLOVER", "DAHLIA", "WISTERIA"],
+    "pearl":    ["OPAL", "CRYSTAL", "IVORY", "DIAMOND", "CORAL"],
+    "sage":     ["THYME", "JUNIPER", "BASIL", "MEADOW", "CLOVER"],
+    "aurora":   ["DAWN", "SOLSTICE", "TWILIGHT", "DUSKFALL", "ZENITH"],
+    "ember":    ["BLAZE", "CINDER", "FLARE", "SPARK", "INFERNA"],
+    "violet":   ["LAVENDER", "ORCHID", "IRIS", "LILAC", "PLUM"],
+    "storm":    ["TEMPEST", "CYCLONE", "GALE", "THUNDER", "MAELSTROM"],
+    "raven":    ["ONYX", "SHADOW", "OBSIDIAN", "DUSK", "UMBRA"],
+    "phoenix":  ["PYRE", "IGNIS", "SERAPH", "VALKYRIE", "SOLARA"],
+    "celeste":  ["SKYLAR", "AZURE", "ZEPHYR", "CIRRUS", "BREEZE"],
+    "siren":    ["CALYPSO", "LORELEI", "NERIDA", "ONDINE", "MARINA"],
+    "venom":    ["TOXICA", "HEMLOCK", "BELLADONNA", "NIGHTSHADE", "ACONITE"],
+    "nyx":      ["HECATE", "MORRIGAN", "VESPER", "SELENA", "PANDORA"],
+    "echo":     ["REVERB", "WHISPER", "MIRAGE", "PHANTOM", "ARIA"],
 }
 
 
@@ -48,7 +102,7 @@ class TraderState:
 
 
 class PortfolioManager:
-    """Competition manager. Each trader has independent $50 cash and positions.
+    """Competition manager for 20 traders. Each trader has independent cash and positions.
     Multiple traders CAN hold the same coin. Positions keyed by trader_id:symbol."""
 
     def __init__(self, bus: EventBus, config: dict, trader_configs: list[dict]):
@@ -210,11 +264,10 @@ class PortfolioManager:
 
     async def _equity_snapshot_loop(self):
         """Record each trader's equity every 5 seconds for the chart.
-        Also checks if any trader should be FIRED (lost 5%+ of starting value)."""
+        Performance reviews happen — no firing, just coaching."""
         while True:
             await asyncio.sleep(5)
             now_ms = time.time() * 1000
-            fire_list = []
             async with self._lock:
                 self._rebuild_global()
                 for tid, t in self.traders.items():
@@ -222,14 +275,6 @@ class PortfolioManager:
                     # Keep last 30 min (~360 points at 5s)
                     if len(t.equity_history) > 400:
                         t.equity_history = t.equity_history[-360:]
-                    # Check for firing: lost 5% of starting value
-                    fire_threshold = t.starting_cash * 0.95
-                    has_positions = len(t.positions) > 0
-                    if t.total_value < fire_threshold and has_positions:
-                        fire_list.append(tid)
-            # Fire outside the lock
-            for tid in fire_list:
-                await self._fire_trader(tid)
 
     async def _fire_trader(self, trader_id: str):
         """Fire an underperforming trader: close all positions, new agent
@@ -253,15 +298,17 @@ class PortfolioManager:
 
             old_value = round(t.cash, 2)  # what's left after liquidation
 
-            # Bump generation
+            # Bump generation and pick a brand new name
             t.times_fired += 1
             t.generation = t.generation + 1
-            gen_label = self._roman(t.generation)
-            base_name = TRADER_NAMES.get(trader_id, trader_id.upper())
-            t.name = f"{base_name} {gen_label}"
+            pool = REPLACEMENT_NAMES.get(trader_id, [])
+            if pool:
+                name_idx = (t.times_fired - 1) % len(pool)
+                t.name = pool[name_idx]
+            else:
+                t.name = f"{TRADER_NAMES.get(trader_id, trader_id.upper())} {self._roman(t.generation)}"
 
             # New agent inherits whatever cash remains — NO fresh capital
-            # Just reset stats and peak so the 5% fire threshold is relative to current cash
             t.starting_cash = t.cash
             t.realized_pnl = 0.0
             t.total_value = t.cash

@@ -12,9 +12,9 @@ LEARNINGS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "learn
 
 
 class Evaluator:
-    """Ruthless manager that learns from EVERY trade instantly.
-    At 75x+ leverage, mistakes are fatal — react in seconds, not minutes.
-    Blacklists fast, cuts leverage fast, adjusts strategy fast."""
+    """Performance coach that learns from EVERY trade and broadcasts
+    winning strategies to ALL agents so they continuously improve.
+    Tests what works, shares learnings, makes the whole team better."""
 
     def __init__(self, bus: EventBus, config: dict):
         self.bus = bus
@@ -202,56 +202,60 @@ class Evaluator:
             asyncio.create_task(self._broadcast_adjustments())
 
     def _update_blacklist(self, symbol: str):
-        """AGGRESSIVE blacklisting. At 75x leverage, we can't afford patience."""
+        """Performance review — learn from losses, coach the team.
+        Only blacklist truly toxic coins, put others on probation to learn."""
         c = self.learnings["coins"].get(symbol, {})
         blacklist = self.learnings["blacklist"]
         probation = self.learnings["probation"]
         rules = self.learnings["rules_learned"]
 
-        # INSTANT BLACKLIST: 1 liquidation = banned
-        if c.get("liquidations", 0) >= 1 and symbol not in blacklist:
+        # Only blacklist after repeated liquidations (3+)
+        if c.get("liquidations", 0) >= 3 and symbol not in blacklist:
             blacklist.append(symbol)
             if symbol in probation:
                 probation.remove(symbol)
-            rules.append(f"BLACKLISTED {symbol}: liquidated — zero tolerance at high leverage")
+            rules.append(f"AVOID {symbol}: {c['liquidations']} liquidations — toxic coin")
             return
 
-        # 2 consecutive losses = blacklisted (was 3)
-        if c.get("consecutive_losses", 0) >= 2 and symbol not in blacklist:
-            blacklist.append(symbol)
-            if symbol in probation:
-                probation.remove(symbol)
-            rules.append(f"BLACKLISTED {symbol}: {c['consecutive_losses']} consecutive losses")
-            return
-
-        # Negative P&L after just 3 trades = blacklisted (was 5)
+        # Blacklist only after 5+ trades with deeply negative P&L
         total_trades = c.get("wins", 0) + c.get("losses", 0)
-        if total_trades >= 3 and c.get("total_pnl", 0) < -2.0 and symbol not in blacklist:
+        if total_trades >= 5 and c.get("total_pnl", 0) < -5.0 and symbol not in blacklist:
             blacklist.append(symbol)
             if symbol in probation:
                 probation.remove(symbol)
-            rules.append(f"BLACKLISTED {symbol}: P&L ${c['total_pnl']:.2f} over {total_trades} trades")
+            rules.append(f"AVOID {symbol}: P&L ${c['total_pnl']:.2f} over {total_trades} trades")
             return
 
-        # 1 loss = probation (was 2)
-        if c.get("consecutive_losses", 0) >= 1 and symbol not in probation and symbol not in blacklist:
+        # Probation after 3 consecutive losses — reduce position size, don't ban
+        if c.get("consecutive_losses", 0) >= 3 and symbol not in probation and symbol not in blacklist:
             probation.append(symbol)
-            rules.append(f"PROBATION {symbol}: lost a trade — watching closely")
+            rules.append(f"CAUTION {symbol}: {c['consecutive_losses']} losses — reduce size")
 
-        # Off probation only if 2 consecutive wins
+        # Off probation after 2 wins
         if c.get("consecutive_losses", 0) == 0 and c.get("wins", 0) >= 2 and symbol in probation:
             probation.remove(symbol)
-            rules.append(f"OFF PROBATION {symbol}: proved itself with wins")
+            rules.append(f"RECOVERED {symbol}: winning again")
 
-        # Any stop loss hit = cut leverage in half immediately
-        if c.get("stop_losses", 0) >= 1 and symbol not in blacklist:
+        # Reduce leverage after 2+ stop losses, not just 1
+        if c.get("stop_losses", 0) >= 2 and symbol not in blacklist:
             current_lev = self.learnings["leverage_overrides"].get(symbol)
             default_lev = self.config["trading"]["default_leverage"]
             base = current_lev or default_lev
-            new_lev = max(10, base // 2)
+            new_lev = max(25, int(base * 0.75))  # 25% reduction, not 50%
             if current_lev != new_lev:
                 self.learnings["leverage_overrides"][symbol] = new_lev
-                rules.append(f"LEVERAGE CUT {symbol}: {base}x -> {new_lev}x after stop loss")
+                rules.append(f"COACHING {symbol}: leverage {base}x -> {new_lev}x — be more careful")
+
+        # BOOST leverage on consistent winners
+        if c.get("wins", 0) >= 3 and c.get("consecutive_losses", 0) == 0:
+            current_lev = self.learnings["leverage_overrides"].get(symbol)
+            default_lev = self.config["trading"]["default_leverage"]
+            max_lev = self.config["trading"]["max_leverage"]
+            base = current_lev or default_lev
+            new_lev = min(max_lev, int(base * 1.15))  # 15% boost for winners
+            if current_lev != new_lev:
+                self.learnings["leverage_overrides"][symbol] = new_lev
+                rules.append(f"BOOSTING {symbol}: leverage -> {new_lev}x — proven winner")
 
         if len(rules) > 100:
             self.learnings["rules_learned"] = rules[-50:]
@@ -296,20 +300,22 @@ class Evaluator:
         self._save_learnings()
 
     async def _broadcast_adjustments(self):
-        """Send strategy adjustments to all traders."""
+        """Coach all traders: boost what's working, reduce what's not."""
         indicators_data = self.learnings["indicators"]
         if not indicators_data:
             return
 
         adjustments = {}
         for indicator, perf in indicators_data.items():
-            if perf["trade_count"] < 1:
+            if perf["trade_count"] < 2:
                 continue
             win_rate = perf["wins"] / perf["trade_count"]
-            if win_rate > 0.55:
-                adjustments[indicator] = 0.05
-            elif win_rate < 0.35:
-                adjustments[indicator] = -0.08  # More aggressive demotion
+            avg_pnl = perf["total_pnl"] / perf["trade_count"]
+            # Reward winners more, punish losers less — let the team learn
+            if win_rate > 0.50 and avg_pnl > 0:
+                adjustments[indicator] = 0.03  # Gentle boost
+            elif win_rate < 0.35 and avg_pnl < 0:
+                adjustments[indicator] = -0.03  # Gentle reduction
             else:
                 adjustments[indicator] = 0.0
 
@@ -318,14 +324,22 @@ class Evaluator:
         total_wins = sum(p["wins"] for p in indicators_data.values())
         overall_win_rate = total_wins / total_trades if total_trades > 0 else 0.5
 
-        # If losing overall, raise thresholds (be pickier)
-        # If winning, lower them (be more aggressive)
+        # Gentle threshold adjustments — don't overreact
         if overall_win_rate > 0.55:
-            self.threshold_adjustment = -0.03
+            self.threshold_adjustment = -0.02  # Slightly more aggressive
         elif overall_win_rate < 0.40:
-            self.threshold_adjustment = 0.05  # Much pickier when losing
+            self.threshold_adjustment = 0.02  # Slightly pickier
         else:
             self.threshold_adjustment = 0.0
+
+        # Find winning coins to recommend to all traders
+        hot_coins = []
+        for sym, stats in self.learnings["coins"].items():
+            total = stats.get("wins", 0) + stats.get("losses", 0)
+            if total >= 2 and stats.get("total_pnl", 0) > 0:
+                win_rate = stats["wins"] / total
+                if win_rate >= 0.5:
+                    hot_coins.append(sym)
 
         await self.bus.publish(Event(
             type=EventType.STRATEGY_ADJUSTMENT,
@@ -338,6 +352,7 @@ class Evaluator:
                 "probation": self.learnings["probation"],
                 "leverage_overrides": self.learnings["leverage_overrides"],
                 "bad_combos": self._get_bad_combos(),
+                "hot_coins": hot_coins,
             },
             source="evaluator",
         ))
