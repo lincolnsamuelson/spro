@@ -1,0 +1,58 @@
+{
+  "trading": {
+    "pairs": [
+      "bitcoin", "ethereum", "ripple", "binancecoin", "solana", "tron",
+      "dogecoin", "cardano", "hyperliquid", "bitcoin-cash", "chainlink",
+      "monero", "stellar", "zcash", "avalanche-2", "litecoin", "hedera-hashgraph",
+      "sui", "shiba-inu", "crypto-com-chain", "the-open-network", "mantle",
+      "polkadot", "bittensor", "uniswap", "near", "aave", "pi-network",
+      "pepe", "internet-computer", "ethereum-classic", "ondo-finance",
+      "worldcoin-wld", "polygon-ecosystem-token", "quant-network", "ethena",
+      "render-token", "cosmos", "kaspa", "algorand", "aptos", "filecoin",
+      "vechain", "arbitrum", "bonk", "fetch-ai", "virtual-protocol",
+      "pudgy-penguins", "official-trump", "jupiter-exchange-solana",
+      "okb", "kucoin-shares", "nexo", "flare-networks", "beldex",
+      "morpho", "pump-fun"
+    ],
+    "starting_balance": 200.0,
+    "mode": "paper"
+  },
+  "market_data": {
+    "poll_interval_seconds": 15,
+    "candle_interval_seconds": 60,
+    "api_base": "https://api.coingecko.com/api/v3"
+  },
+  "indicators": {
+    "rsi_period": 14,
+    "macd_fast": 12,
+    "macd_slow": 26,
+    "macd_signal": 9,
+    "bb_period": 20,
+    "bb_std": 2,
+    "ema_fast": 9,
+    "ema_slow": 21
+  },
+  "strategy": {
+    "signal_threshold": 0.50,
+    "cooldown_seconds": 90,
+    "weights": {
+      "rsi": 0.25,
+      "macd": 0.30,
+      "bollinger": 0.20,
+      "ema_crossover": 0.15,
+      "sentiment": 0.10
+    }
+  },
+  "risk": {
+    "max_risk_per_trade": 0.05,
+    "max_positions": 9999,
+    "max_drawdown": 0.25,
+    "default_stop_loss_pct": 0.03,
+    "default_take_profit_pct": 0.02,
+    "simulated_slippage_pct": 0.001,
+    "min_cash_reserve": 0.5
+  },
+  "dashboard": {
+    "refresh_interval_seconds": 3
+  }
+}
