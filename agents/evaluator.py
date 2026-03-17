@@ -12,8 +12,9 @@ LEARNINGS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "learn
 
 
 class Evaluator:
-    """Learns from every trade. Persists lessons to disk so mistakes are never
-    repeated across restarts. Now also tracks per-trader performance."""
+    """Ruthless manager that learns from EVERY trade instantly.
+    At 75x+ leverage, mistakes are fatal — react in seconds, not minutes.
+    Blacklists fast, cuts leverage fast, adjusts strategy fast."""
 
     def __init__(self, bus: EventBus, config: dict):
         self.bus = bus
@@ -34,13 +35,15 @@ class Evaluator:
         self.weight_adjustments: dict[str, float] = {}
         self.threshold_adjustment: float = 0.0
         self.learnings = self._load_learnings()
+        self._last_broadcast = 0.0
+        self._trades_since_broadcast = 0
 
     def _default_learnings(self) -> dict:
         return {
             "coins": {},
             "indicators": {},
             "combos": {},
-            "traders": {},  # NEW: per-trader performance
+            "traders": {},
             "blacklist": [],
             "probation": [],
             "leverage_overrides": {},
@@ -106,6 +109,9 @@ class Evaluator:
         trader_id = trade.get("trader_id", "")
         trade["active_signals"] = dict(self.recent_signals.get(symbol, {}))
         self.completed_trades.append(trade)
+        # Keep memory bounded
+        if len(self.completed_trades) > 500:
+            self.completed_trades = self.completed_trades[-300:]
 
         pnl = trade.get("pnl")
         if pnl is None:
@@ -183,62 +189,83 @@ class Evaluator:
         if is_win and leverage > 0:
             c["best_leverage"] = leverage
 
+        # INSTANT reaction — blacklist/probation on every trade
         self._update_blacklist(symbol)
         self._save_learnings()
 
+        # Broadcast adjustments after every few trades, not just on timer
+        self._trades_since_broadcast += 1
+        now = time.time()
+        if self._trades_since_broadcast >= 3 or now - self._last_broadcast > 10:
+            self._trades_since_broadcast = 0
+            self._last_broadcast = now
+            asyncio.create_task(self._broadcast_adjustments())
+
     def _update_blacklist(self, symbol: str):
+        """AGGRESSIVE blacklisting. At 75x leverage, we can't afford patience."""
         c = self.learnings["coins"].get(symbol, {})
         blacklist = self.learnings["blacklist"]
         probation = self.learnings["probation"]
         rules = self.learnings["rules_learned"]
 
-        if c.get("consecutive_losses", 0) >= 3 and symbol not in blacklist:
+        # INSTANT BLACKLIST: 1 liquidation = banned
+        if c.get("liquidations", 0) >= 1 and symbol not in blacklist:
+            blacklist.append(symbol)
+            if symbol in probation:
+                probation.remove(symbol)
+            rules.append(f"BLACKLISTED {symbol}: liquidated — zero tolerance at high leverage")
+            return
+
+        # 2 consecutive losses = blacklisted (was 3)
+        if c.get("consecutive_losses", 0) >= 2 and symbol not in blacklist:
             blacklist.append(symbol)
             if symbol in probation:
                 probation.remove(symbol)
             rules.append(f"BLACKLISTED {symbol}: {c['consecutive_losses']} consecutive losses")
             return
 
-        if c.get("liquidations", 0) >= 2 and symbol not in blacklist:
+        # Negative P&L after just 3 trades = blacklisted (was 5)
+        total_trades = c.get("wins", 0) + c.get("losses", 0)
+        if total_trades >= 3 and c.get("total_pnl", 0) < -2.0 and symbol not in blacklist:
             blacklist.append(symbol)
             if symbol in probation:
                 probation.remove(symbol)
-            rules.append(f"BLACKLISTED {symbol}: {c['liquidations']} liquidations")
-            return
-
-        total_trades = c.get("wins", 0) + c.get("losses", 0)
-        if total_trades >= 5 and c.get("total_pnl", 0) < -5.0 and symbol not in blacklist:
-            blacklist.append(symbol)
             rules.append(f"BLACKLISTED {symbol}: P&L ${c['total_pnl']:.2f} over {total_trades} trades")
             return
 
-        if c.get("consecutive_losses", 0) >= 2 and symbol not in probation and symbol not in blacklist:
+        # 1 loss = probation (was 2)
+        if c.get("consecutive_losses", 0) >= 1 and symbol not in probation and symbol not in blacklist:
             probation.append(symbol)
-            rules.append(f"PROBATION {symbol}: {c['consecutive_losses']} consecutive losses")
+            rules.append(f"PROBATION {symbol}: lost a trade — watching closely")
 
-        if c.get("consecutive_losses", 0) == 0 and symbol in probation:
+        # Off probation only if 2 consecutive wins
+        if c.get("consecutive_losses", 0) == 0 and c.get("wins", 0) >= 2 and symbol in probation:
             probation.remove(symbol)
-            rules.append(f"OFF PROBATION {symbol}: won a trade")
+            rules.append(f"OFF PROBATION {symbol}: proved itself with wins")
 
-        if c.get("liquidations", 0) >= 1 and symbol not in blacklist:
+        # Any stop loss hit = cut leverage in half immediately
+        if c.get("stop_losses", 0) >= 1 and symbol not in blacklist:
             current_lev = self.learnings["leverage_overrides"].get(symbol)
-            new_lev = max(3, (current_lev or self.config["trading"]["default_leverage"]) // 2)
+            default_lev = self.config["trading"]["default_leverage"]
+            base = current_lev or default_lev
+            new_lev = max(10, base // 2)
             if current_lev != new_lev:
                 self.learnings["leverage_overrides"][symbol] = new_lev
-                rules.append(f"LEVERAGE CUT {symbol}: reduced to {new_lev}x")
+                rules.append(f"LEVERAGE CUT {symbol}: {base}x -> {new_lev}x after stop loss")
 
         if len(rules) > 100:
             self.learnings["rules_learned"] = rules[-50:]
 
     async def _periodic_eval(self):
+        """Evaluate every 15 seconds — fast feedback loop."""
         while True:
-            await asyncio.sleep(90)
+            await asyncio.sleep(15)
             await self._evaluate()
 
     async def _evaluate(self):
         self.evaluations_run += 1
         now = time.time()
-        window = 300
+        window = 120  # Look at last 2 minutes (was 5)
 
         best_moves = []
         for symbol, snapshots in self.price_snapshots.items():
@@ -265,61 +292,63 @@ class Evaluator:
         if best_theoretical > 0:
             self.avg_efficiency = min(our_recent_pnl / (best_theoretical + 0.001) * 100, 100)
 
-        await self._refine_strategy()
+        await self._broadcast_adjustments()
         self._save_learnings()
 
-    async def _refine_strategy(self):
+    async def _broadcast_adjustments(self):
+        """Send strategy adjustments to all traders."""
         indicators_data = self.learnings["indicators"]
         if not indicators_data:
             return
 
         adjustments = {}
         for indicator, perf in indicators_data.items():
-            if perf["trade_count"] < 2:
+            if perf["trade_count"] < 1:
                 continue
             win_rate = perf["wins"] / perf["trade_count"]
             if win_rate > 0.55:
-                adjustments[indicator] = 0.04
-            elif win_rate < 0.30:
-                adjustments[indicator] = -0.06
+                adjustments[indicator] = 0.05
+            elif win_rate < 0.35:
+                adjustments[indicator] = -0.08  # More aggressive demotion
             else:
                 adjustments[indicator] = 0.0
 
-        if adjustments:
-            self.weight_adjustments = adjustments
-            total_trades = sum(p["trade_count"] for p in indicators_data.values())
-            total_wins = sum(p["wins"] for p in indicators_data.values())
-            overall_win_rate = total_wins / total_trades if total_trades > 0 else 0.5
+        self.weight_adjustments = adjustments
+        total_trades = sum(p["trade_count"] for p in indicators_data.values())
+        total_wins = sum(p["wins"] for p in indicators_data.values())
+        overall_win_rate = total_wins / total_trades if total_trades > 0 else 0.5
 
-            if overall_win_rate > 0.55 and len(self.missed_opportunities) > 3:
-                self.threshold_adjustment = -0.03
-            elif overall_win_rate < 0.30:
-                self.threshold_adjustment = 0.04
-            else:
-                self.threshold_adjustment = 0.0
+        # If losing overall, raise thresholds (be pickier)
+        # If winning, lower them (be more aggressive)
+        if overall_win_rate > 0.55:
+            self.threshold_adjustment = -0.03
+        elif overall_win_rate < 0.40:
+            self.threshold_adjustment = 0.05  # Much pickier when losing
+        else:
+            self.threshold_adjustment = 0.0
 
-            await self.bus.publish(Event(
-                type=EventType.STRATEGY_ADJUSTMENT,
-                payload={
-                    "weight_adjustments": adjustments,
-                    "threshold_adjustment": self.threshold_adjustment,
-                    "win_rate": round(overall_win_rate, 3),
-                    "evaluations_run": self.evaluations_run,
-                    "blacklist": self.learnings["blacklist"],
-                    "probation": self.learnings["probation"],
-                    "leverage_overrides": self.learnings["leverage_overrides"],
-                    "bad_combos": self._get_bad_combos(),
-                },
-                source="evaluator",
-            ))
+        await self.bus.publish(Event(
+            type=EventType.STRATEGY_ADJUSTMENT,
+            payload={
+                "weight_adjustments": adjustments,
+                "threshold_adjustment": self.threshold_adjustment,
+                "win_rate": round(overall_win_rate, 3),
+                "evaluations_run": self.evaluations_run,
+                "blacklist": self.learnings["blacklist"],
+                "probation": self.learnings["probation"],
+                "leverage_overrides": self.learnings["leverage_overrides"],
+                "bad_combos": self._get_bad_combos(),
+            },
+            source="evaluator",
+        ))
 
     def _get_bad_combos(self) -> dict:
         bad = {}
         for combo_key, stats in self.learnings["combos"].items():
             total = stats["wins"] + stats["losses"]
-            if total >= 2 and stats["total_pnl"] < 0:
+            if total >= 1 and stats["total_pnl"] < 0:
                 win_rate = stats["wins"] / total if total > 0 else 0
-                if win_rate < 0.35:
+                if win_rate < 0.5:
                     bad[combo_key] = round(stats["total_pnl"], 4)
         return bad
 
