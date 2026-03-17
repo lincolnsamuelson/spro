@@ -41,6 +41,8 @@ class TraderState:
         self.total_wins = 0
         self.total_losses = 0
         self.color = TRADER_COLORS.get(trader_id, "#64748b")
+        self.generation = 1
+        self.times_fired = 0
         # Rolling equity history for the chart (timestamp_ms, value)
         self.equity_history: list[tuple[float, float]] = []
 
@@ -100,6 +102,11 @@ class PortfolioManager:
                 t.win_streak = ts.get("win_streak", 0)
                 t.total_wins = ts.get("total_wins", 0)
                 t.total_losses = ts.get("total_losses", 0)
+                t.generation = ts.get("generation", 1)
+                t.times_fired = ts.get("times_fired", 0)
+                if t.generation > 1:
+                    base_name = TRADER_NAMES.get(tid, tid.upper())
+                    t.name = f"{base_name} {PortfolioManager._roman(t.generation)}"
                 for sym, pos_data in ts.get("positions", {}).items():
                     t.positions[sym] = Position(
                         symbol=sym,
@@ -128,6 +135,8 @@ class PortfolioManager:
                 "win_streak": t.win_streak,
                 "total_wins": t.total_wins,
                 "total_losses": t.total_losses,
+                "generation": t.generation,
+                "times_fired": t.times_fired,
                 "positions": {},
             }
             for sym, pos in t.positions.items():
@@ -200,10 +209,12 @@ class PortfolioManager:
                 return
 
     async def _equity_snapshot_loop(self):
-        """Record each trader's equity every 5 seconds for the chart."""
+        """Record each trader's equity every 5 seconds for the chart.
+        Also checks if any trader should be FIRED (lost 5%+ of starting value)."""
         while True:
             await asyncio.sleep(5)
             now_ms = time.time() * 1000
+            fire_list = []
             async with self._lock:
                 self._rebuild_global()
                 for tid, t in self.traders.items():
@@ -211,6 +222,86 @@ class PortfolioManager:
                     # Keep last 30 min (~360 points at 5s)
                     if len(t.equity_history) > 400:
                         t.equity_history = t.equity_history[-360:]
+                    # Check for firing: lost 5% of starting value
+                    fire_threshold = t.starting_cash * 0.95
+                    has_positions = len(t.positions) > 0
+                    if t.total_value < fire_threshold and has_positions:
+                        fire_list.append(tid)
+            # Fire outside the lock
+            for tid in fire_list:
+                await self._fire_trader(tid)
+
+    async def _fire_trader(self, trader_id: str):
+        """Fire an underperforming trader: close all positions, reset with fresh
+        $50 and all accumulated learnings applied."""
+        async with self._lock:
+            t = self.traders.get(trader_id)
+            if not t:
+                return
+
+            # Close all positions at current prices
+            symbols_to_close = list(t.positions.keys())
+            for sym in symbols_to_close:
+                pos = t.positions[sym]
+                price = self.latest_prices.get(sym, pos.entry_price)
+                fill_price = price * (1 - self.slippage)
+                pcp = (fill_price - pos.entry_price) / pos.entry_price if pos.entry_price > 0 else 0
+                leveraged_pnl = pos.margin * pcp * pos.leverage
+                returned = max(pos.margin + leveraged_pnl, 0)
+                t.cash += returned
+                del t.positions[sym]
+
+            # Bump generation
+            t.times_fired += 1
+            t.generation = t.generation + 1
+            gen_label = self._roman(t.generation)
+            base_name = TRADER_NAMES.get(trader_id, trader_id.upper())
+            t.name = f"{base_name} {gen_label}"
+            old_value = round(t.total_value, 2)
+
+            # Reset with fresh starting cash
+            t.cash = t.starting_cash
+            t.realized_pnl = 0.0
+            t.total_value = t.starting_cash
+            t.peak_value = t.starting_cash
+            t.win_streak = 0
+            t.total_wins = 0
+            t.total_losses = 0
+
+            self._rebuild_global()
+            self._save_state()
+
+            trade = {
+                "time": time.time(), "symbol": "---", "side": "FIRED",
+                "reason": "fired", "pnl": round(old_value - t.starting_cash, 2),
+                "trader_id": trader_id, "generation": t.generation,
+                "new_name": t.name,
+            }
+            self.trade_history.append(trade)
+
+        # Publish firing event so the trader resets its brain
+        await self.bus.publish(Event(
+            type=EventType.TRADER_FIRED,
+            payload={
+                "trader_id": trader_id,
+                "generation": t.generation,
+                "new_name": t.name,
+                "old_value": old_value,
+                "reason": f"Lost {round((1 - old_value / t.starting_cash) * 100, 1)}% — FIRED",
+            },
+            source="portfolio_manager",
+        ))
+        await self._publish_portfolio()
+
+    @staticmethod
+    def _roman(n: int) -> str:
+        vals = [(10,'X'),(9,'IX'),(5,'V'),(4,'IV'),(1,'I')]
+        result = ''
+        for val, numeral in vals:
+            while n >= val:
+                result += numeral
+                n -= val
+        return result
 
     async def _price_loop(self, queue):
         while True:
@@ -428,6 +519,8 @@ class PortfolioManager:
                 "losses": t.total_losses,
                 "win_rate": round(win_rate, 1),
                 "win_streak": t.win_streak,
+                "generation": t.generation,
+                "times_fired": t.times_fired,
             })
         board.sort(key=lambda x: x["equity"], reverse=True)
         for i, b in enumerate(board):

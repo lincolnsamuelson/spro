@@ -22,6 +22,7 @@ class EventType(Enum):
     PORTFOLIO_UPDATE = "portfolio_update"
     STRATEGY_ADJUSTMENT = "strategy_adjustment"
     COMPOUND_TRIGGER = "compound_trigger"
+    TRADER_FIRED = "trader_fired"
     HEARTBEAT = "heartbeat"
     SHUTDOWN = "shutdown"
 

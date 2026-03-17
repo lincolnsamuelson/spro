@@ -114,9 +114,15 @@ async def api_data(request):
         win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
         total_pool += total
 
+        generation = tdata.get("generation", 1)
+        times_fired = tdata.get("times_fired", 0)
+        # Build display name with generation
+        base_name = TRADER_NAMES.get(tid, tid.upper())
+        display_name = base_name if generation <= 1 else f"{base_name} {'I' * generation}"
+
         scoreboard.append({
             "trader_id": tid,
-            "name": TRADER_NAMES.get(tid, tid.upper()),
+            "name": display_name,
             "style": style,
             "color": TRADER_COLORS.get(tid, "#64748b"),
             "equity": round(total, 2),
@@ -129,6 +135,8 @@ async def api_data(request):
             "losses": losses,
             "win_rate": round(win_rate, 1),
             "win_streak": streak,
+            "generation": generation,
+            "times_fired": times_fired,
         })
 
     scoreboard.sort(key=lambda x: x["equity"], reverse=True)
@@ -337,7 +345,7 @@ HTML = r"""<!DOCTYPE html>
         <thead><tr>
           <th>Rank</th><th>Trader</th><th>Style</th>
           <th>Equity</th><th>P&L</th><th>P&L %</th>
-          <th>Positions</th><th>W / L</th><th>Win Rate</th><th>Streak</th>
+          <th>Positions</th><th>W / L</th><th>Win Rate</th><th>Streak</th><th>Fired</th>
         </tr></thead>
         <tbody id="scoreboard-body"></tbody>
       </table>
@@ -469,6 +477,7 @@ function renderScoreboard(scoreboard) {
         <td>${b.wins} / ${b.losses}</td>
         <td>${fmt(b.win_rate,1)}%</td>
         <td>${streakStr}</td>
+        <td style="color:${b.times_fired > 0 ? 'var(--red)' : 'var(--text-dim)'};">${b.times_fired > 0 ? b.times_fired + 'x' : '---'}</td>
       </tr>
     `;
   }).join('');

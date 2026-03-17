@@ -93,11 +93,12 @@ class TraderAgent:
         self.signals_received: int = 0
         self.trades_sent: int = 0
 
-        # Listen for portfolio updates and price updates
+        # Listen for portfolio updates, price updates, and firings
         self.portfolio_queue = bus.subscribe(
             f"trader_{trader_id}_portfolio",
             topics={EventType.PORTFOLIO_UPDATE, EventType.ORDER_FILLED,
-                    EventType.PRICE_UPDATE, EventType.SHUTDOWN},
+                    EventType.PRICE_UPDATE, EventType.TRADER_FIRED,
+                    EventType.SHUTDOWN},
         )
 
     async def run(self):
@@ -118,12 +119,35 @@ class TraderAgent:
             event = await self.portfolio_queue.get()
             if event.type == EventType.SHUTDOWN:
                 return
+            if event.type == EventType.TRADER_FIRED:
+                if event.payload.get("trader_id") == self.trader_id:
+                    self._on_fired(event.payload)
+                continue
             if event.type == EventType.PORTFOLIO_UPDATE:
                 self._on_portfolio_update(event.payload)
             elif event.type == EventType.ORDER_FILLED:
                 self._on_order_filled(event.payload)
             elif event.type == EventType.PRICE_UPDATE:
                 self.latest_prices[event.payload["symbol"]] = event.payload["price"]
+
+    def _on_fired(self, payload: dict):
+        """I got FIRED. Reset my brain, apply all learnings, start fresh."""
+        # Clear all state
+        self.signals.clear()
+        self.last_trade_signal.clear()
+        self.my_positions.clear()
+        self.pending_symbols.clear()
+        self.compound_multiplier = 1.0
+        self.trades_sent = 0
+        self.signals_received = 0
+
+        # Reset weights to base style (fresh start)
+        self.weights = dict(STYLE_WEIGHTS.get(self.style, STYLE_WEIGHTS["momentum_chaser"]))
+        self.cooldown = STYLE_COOLDOWNS.get(self.style, 5)
+        self.threshold = STYLE_THRESHOLDS.get(self.style, 0.28)
+
+        # But KEEP all learned intelligence (blacklist, probation, etc.)
+        # The new agent inherits all lessons from the evaluator
 
     def _on_portfolio_update(self, payload: dict):
         # Update my view of which positions I own
