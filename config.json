@@ -21,7 +21,7 @@
   },
   "market_data": {
     "poll_interval_seconds": 15,
-    "candle_interval_seconds": 60,
+    "candle_interval_seconds": 30,
     "api_base": "https://api.coingecko.com/api/v3"
   },
   "indicators": {
@@ -36,7 +36,7 @@
   },
   "strategy": {
     "signal_threshold": 0.30,
-    "cooldown_seconds": 30,
+    "cooldown_seconds": 15,
     "weights": {
       "rsi": 0.15,
       "macd": 0.20,
