@@ -54,8 +54,8 @@
     "max_risk_per_trade": 0.50,
     "max_positions": 9999,
     "max_drawdown": 0.70,
-    "default_stop_loss_pct": 0.015,
-    "trailing_stop_pct": 0.01,
+    "default_stop_loss_pct": 0.004,
+    "trailing_stop_pct": 0.003,
     "simulated_slippage_pct": 0.001,
     "min_cash_reserve": 0.01
   },
