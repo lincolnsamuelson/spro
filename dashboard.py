@@ -5,13 +5,20 @@ import os
 
 class Dashboard:
     def __init__(self, portfolio_mgr, auditor, evaluator, compounder,
-                 volatility, traders, config: dict):
+                 volatility, traders, config: dict,
+                 backtester=None, regime=None, optimizer=None,
+                 risk_sentinel=None, speed_coach=None):
         self.portfolio_mgr = portfolio_mgr
         self.auditor = auditor
         self.evaluator = evaluator
         self.compounder = compounder
         self.volatility = volatility
         self.traders = traders  # list of TraderAgent instances
+        self.backtester = backtester
+        self.regime = regime
+        self.optimizer = optimizer
+        self.risk_sentinel = risk_sentinel
+        self.speed_coach = speed_coach
         self.refresh = config["dashboard"]["refresh_interval_seconds"]
 
     async def run(self):
@@ -35,7 +42,7 @@ class Dashboard:
         lines.append("=" * w)
         lines.append(
             f"  TRADER COMPETITION  |  "
-            f"5 Competitors x $50  |  "
+            f"20 Competitors x $5,000  |  "
             f"Total Pool: ${port.total_value:.2f}  |  "
             f"{len(prices)} coins  |  "
             f"PAPER MODE"
@@ -114,6 +121,28 @@ class Dashboard:
                 )
         if not any_positions:
             lines.append("    (no positions — deploying capital...)")
+        lines.append("-" * w)
+
+        # Meta-Optimization Team
+        lines.append("  META-OPTIMIZATION TEAM")
+        meta_parts = []
+        if self.regime:
+            rs = self.regime.get_summary()
+            meta_parts.append(f"Regime:{rs['current_regime'].upper()}({rs['confidence']}%)")
+        if self.optimizer:
+            os_ = self.optimizer.get_summary()
+            meta_parts.append(f"Opt:PT={os_['optimal_profit_target']} LL={os_['optimal_loss_limit']} Lev={os_['optimal_leverage']}")
+        if self.risk_sentinel:
+            rss = self.risk_sentinel.get_summary()
+            meta_parts.append(f"Risk:{rss['risk_level'].upper()}")
+        if self.speed_coach:
+            sc = self.speed_coach.get_summary()
+            meta_parts.append(f"Idle:${sc['total_idle_cash']:.0f}({sc['idle_traders']}traders)")
+        if self.backtester:
+            bs = self.backtester.get_summary()
+            if bs['best_config']:
+                meta_parts.append(f"BT:{bs['best_config'].get('label','?')}(WR:{bs['best_win_rate']:.0f}%)")
+        lines.append("    " + "  |  ".join(meta_parts) if meta_parts else "    (starting up...)")
         lines.append("-" * w)
 
         # Recent trades

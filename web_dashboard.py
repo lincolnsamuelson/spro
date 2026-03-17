@@ -27,13 +27,13 @@ TRADER_COLORS = {
     "ruby":     "#ec4899",   # pink
     "stella":   "#ef4444",   # red
     "ivy":      "#14b8a6",   # teal
-    "pearl":    "#f1f5f9",   # pearl white
+    "pearl":    "#94a3b8",   # pearl grey
     "sage":     "#84cc16",   # lime
     "aurora":   "#06b6d4",   # cyan
     "ember":    "#f59e0b",   # amber
     "violet":   "#a855f7",   # violet
     "storm":    "#6366f1",   # indigo
-    "raven":    "#1e293b",   # slate dark
+    "raven":    "#374151",   # slate
     "phoenix":  "#dc2626",   # crimson
     "celeste":  "#38bdf8",   # sky
     "siren":    "#e879f9",   # fuchsia
@@ -212,19 +212,18 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Trader Competition</title>
+<title>Running of the Bull</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <style>
   :root {
-    --bg: #0a0e17;
-    --card: #111827;
-    --border: #1e293b;
-    --text: #e2e8f0;
-    --text-dim: #64748b;
-    --green: #22c55e;
-    --red: #ef4444;
-    --yellow: #eab308;
+    --bg: #ffffff;
+    --card: #ffffff;
+    --border: #111111;
+    --text: #111111;
+    --text-dim: #666666;
+    --green: #16a34a;
+    --red: #dc2626;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -234,18 +233,18 @@ HTML = r"""<!DOCTYPE html>
     min-height: 100vh;
   }
   .header {
-    background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
-    border-bottom: 1px solid var(--border);
+    background: #111111;
+    border-bottom: 2px solid #000000;
     padding: 20px 32px;
     display: flex;
     align-items: center;
     justify-content: space-between;
+    color: #ffffff;
   }
-  .header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
-  .header h1 span { color: #f97316; }
+  .header h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; color: #ffffff; }
   .header-meta {
     display: flex; gap: 16px; align-items: center;
-    font-size: 12px; color: var(--text-dim);
+    font-size: 12px; color: #999999;
   }
   .live-dot {
     width: 8px; height: 8px; background: var(--green);
@@ -254,7 +253,7 @@ HTML = r"""<!DOCTYPE html>
   }
   @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.3;} }
   .mode-badge {
-    background: #1e3a5f; color: #3b82f6;
+    background: #333333; color: #ffffff;
     padding: 4px 10px; border-radius: 4px;
     font-weight: 600; font-size: 11px;
     text-transform: uppercase; letter-spacing: 1px;
@@ -266,15 +265,15 @@ HTML = r"""<!DOCTYPE html>
     display: flex; gap: 24px; margin-bottom: 24px;
     align-items: center; font-size: 14px;
   }
-  .pool-bar .val { font-size: 28px; font-weight: 700; }
+  .pool-bar .val { font-size: 28px; font-weight: 700; color: #111111; }
   .pool-bar .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 1px; }
 
   .card {
-    background: var(--card); border: 1px solid var(--border);
+    background: var(--card); border: 2px solid var(--border);
     border-radius: 12px; overflow: hidden; margin-bottom: 24px;
   }
   .card-header {
-    padding: 16px 20px; border-bottom: 1px solid var(--border);
+    padding: 16px 20px; border-bottom: 2px solid var(--border);
     font-size: 14px; font-weight: 600;
     display: flex; justify-content: space-between; align-items: center;
   }
@@ -289,11 +288,11 @@ HTML = r"""<!DOCTYPE html>
   th {
     text-align: left; font-size: 10px; text-transform: uppercase;
     letter-spacing: 1px; color: var(--text-dim);
-    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    padding: 10px 14px; border-bottom: 2px solid var(--border);
   }
-  td { padding: 12px 14px; font-size: 13px; border-bottom: 1px solid #1a2332; }
+  td { padding: 12px 14px; font-size: 13px; border-bottom: 1px solid #dddddd; }
   tr:last-child td { border-bottom: none; }
-  tr:hover td { background: #1a2332; }
+  tr:hover td { background: #f5f5f5; }
 
   .rank-1 { font-size: 18px; }
   .rank-medal { font-weight: 700; font-size: 16px; }
@@ -304,6 +303,7 @@ HTML = r"""<!DOCTYPE html>
   .trader-color {
     width: 12px; height: 12px; border-radius: 3px;
     display: inline-block; vertical-align: middle; margin-right: 8px;
+    border: 1px solid #000000;
   }
 
   .equity-big { font-size: 20px; font-weight: 700; }
@@ -315,7 +315,8 @@ HTML = r"""<!DOCTYPE html>
   }
   .pos-item {
     display: flex; justify-content: space-between; align-items: center;
-    padding: 8px 12px; background: #0d1420; border-radius: 8px; font-size: 12px;
+    padding: 8px 12px; background: #f5f5f5; border: 1px solid #dddddd;
+    border-radius: 8px; font-size: 12px;
   }
 
   @media (max-width: 900px) {
@@ -327,7 +328,7 @@ HTML = r"""<!DOCTYPE html>
 <body>
 
 <div class="header">
-  <h1><span>TRADER</span> COMPETITION</h1>
+  <h1>RUNNING OF THE BULL</h1>
   <div class="header-meta">
     <span class="live-dot"></span>
     <span id="last-updated">Loading...</span>
@@ -360,7 +361,7 @@ HTML = r"""<!DOCTYPE html>
   <div class="card">
     <div class="card-header">
       COMPETITION — EQUITY OVER TIME
-      <span style="font-size:12px;color:var(--text-dim);" id="chart-info">--</span>
+      <span style="font-size:12px;color:#888888;" id="chart-info">--</span>
     </div>
     <div class="chart-container">
       <canvas id="comp-chart"></canvas>
@@ -386,7 +387,7 @@ HTML = r"""<!DOCTYPE html>
   <div class="card">
     <div class="card-header">
       Open Positions
-      <span style="font-size:12px;color:var(--text-dim);" id="pos-count">--</span>
+      <span style="font-size:12px;color:#888888;" id="pos-count">--</span>
     </div>
     <div class="pos-grid" id="pos-grid"></div>
   </div>
@@ -436,7 +437,7 @@ function renderChart(chartData, yMin, yMax) {
           display: true,
           position: 'top',
           labels: {
-            color: '#e2e8f0',
+            color: '#111111',
             font: { family: "'SF Mono', monospace", size: 11 },
             usePointStyle: true,
             pointStyle: 'rectRounded',
@@ -444,10 +445,10 @@ function renderChart(chartData, yMin, yMax) {
           },
         },
         tooltip: {
-          backgroundColor: '#1e293b',
-          titleColor: '#e2e8f0',
-          bodyColor: '#e2e8f0',
-          borderColor: '#334155',
+          backgroundColor: '#111111',
+          titleColor: '#ffffff',
+          bodyColor: '#ffffff',
+          borderColor: '#000000',
           borderWidth: 1,
           padding: 12,
           bodyFont: { family: "'SF Mono', monospace", size: 12 },
@@ -472,13 +473,13 @@ function renderChart(chartData, yMin, yMax) {
             stepSize: 5,
             displayFormats: { second:'HH:mm:ss' },
           },
-          grid: { color: '#1e293b22', drawBorder: false },
-          ticks: { color: '#64748b', font: { family: "'SF Mono', monospace", size: 10 }, autoSkip: true, maxRotation: 45 },
+          grid: { color: '#e0e0e0', drawBorder: true, borderColor: '#111111' },
+          ticks: { color: '#111111', font: { family: "'SF Mono', monospace", size: 10 }, autoSkip: true, maxRotation: 45 },
         },
         y: {
-          grid: { color: '#1e293b44', drawBorder: false },
+          grid: { color: '#e0e0e0', drawBorder: true, borderColor: '#111111' },
           ticks: {
-            color: '#64748b',
+            color: '#111111',
             font: { family: "'SF Mono', monospace", size: 10 },
             callback: function(v) { return '$' + v.toFixed(0); },
           },
@@ -503,7 +504,7 @@ function renderScoreboard(scoreboard) {
           <span class="trader-color" style="background:${b.color};"></span>
           <strong>${b.name}</strong>
         </td>
-        <td style="color:var(--text-dim);">${b.style}</td>
+        <td style="color:#888888;">${b.style}</td>
         <td class="equity-big">$${fmt(b.equity)}</td>
         <td class="${pnlClass(b.pnl)}">${pnlSign}$${fmt(Math.abs(b.pnl))}</td>
         <td class="${pnlClass(b.pnl_pct)}">${pnlSign}${fmt(Math.abs(b.pnl_pct),1)}%</td>
@@ -511,7 +512,7 @@ function renderScoreboard(scoreboard) {
         <td>${b.wins} / ${b.losses}</td>
         <td>${fmt(b.win_rate,1)}%</td>
         <td>${streakStr}</td>
-        <td style="color:${b.times_fired > 0 ? 'var(--red)' : 'var(--text-dim)'};">${b.times_fired > 0 ? b.times_fired + 'x' : '---'}</td>
+        <td style="color:${b.times_fired > 0 ? 'var(--red)' : '#999999'};">${b.times_fired > 0 ? b.times_fired + 'x' : '---'}</td>
       </tr>
     `;
   }).join('');
@@ -560,7 +561,7 @@ function render(d) {
   const posGrid = document.getElementById('pos-grid');
   document.getElementById('pos-count').textContent = d.positions.length + ' open';
   if (d.positions.length === 0) {
-    posGrid.innerHTML = '<div style="padding:20px;color:var(--text-dim);text-align:center;">No positions yet — deploying capital...</div>';
+    posGrid.innerHTML = '<div style="padding:20px;color:#999999;text-align:center;">No positions yet — deploying capital...</div>';
   } else {
     posGrid.innerHTML = d.positions.map(p => {
       const trader = d.scoreboard.find(s => s.trader_id === p.trader_id);
@@ -571,10 +572,10 @@ function render(d) {
           <span>
             <span class="trader-color" style="background:${color};"></span>
             <strong>${p.symbol.split('-')[0].toUpperCase()}</strong>
-            <span style="color:var(--yellow);margin-left:6px;">${p.leverage}x</span>
+            <span style="color:#111111;font-weight:600;margin-left:6px;">${p.leverage}x</span>
           </span>
           <span>
-            <span style="color:var(--text-dim);">M:</span>$${fmt(p.margin)}
+            <span style="color:#888888;">M:</span>$${fmt(p.margin)}
             <span style="color:${color};margin-left:8px;font-weight:600;">${tname}</span>
           </span>
         </div>
@@ -599,5 +600,5 @@ app.router.add_get("/", index)
 app.router.add_get("/api/data", api_data)
 
 if __name__ == "__main__":
-    print("Starting Trader Competition Dashboard at http://localhost:8080")
+    print("Starting Running of the Bull at http://localhost:8080")
     web.run_app(app, host="0.0.0.0", port=8080)

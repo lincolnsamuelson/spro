@@ -20,6 +20,10 @@ class SignalRouter:
         topics = RESEARCHER_SIGNAL_TYPES | {
             EventType.STRATEGY_ADJUSTMENT,
             EventType.COMPOUND_TRIGGER,
+            EventType.OPTIMIZER_UPDATE,
+            EventType.MARKET_REGIME,
+            EventType.RISK_ALERT,
+            EventType.SPEED_REPORT,
             EventType.SHUTDOWN,
         }
         self.queue = bus.subscribe("signal_router", topics=topics)
@@ -46,8 +50,10 @@ class SignalRouter:
                         pass
                 continue
 
-            if event.type == EventType.COMPOUND_TRIGGER:
-                # Forward to all traders — each checks its own idle capital
+            if event.type in (EventType.COMPOUND_TRIGGER, EventType.OPTIMIZER_UPDATE,
+                              EventType.MARKET_REGIME, EventType.RISK_ALERT,
+                              EventType.SPEED_REPORT):
+                # Forward to all traders
                 for trader in self.traders:
                     try:
                         trader.signal_queue.put_nowait(event)

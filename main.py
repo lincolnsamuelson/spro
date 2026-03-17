@@ -17,6 +17,11 @@ from agents.portfolio_manager import PortfolioManager
 from agents.auditor import Auditor
 from agents.evaluator import Evaluator
 from agents.compounder import Compounder
+from agents.backtester import Backtester
+from agents.regime_detector import RegimeDetector
+from agents.strategy_optimizer import StrategyOptimizer
+from agents.risk_sentinel import RiskSentinel
+from agents.speed_coach import SpeedCoach
 from dashboard import Dashboard
 
 
@@ -120,11 +125,29 @@ async def main():
     auditor = Auditor(bus, config)
     evaluator = Evaluator(bus, config)
     compounder = Compounder(bus, config)
+
+    # === Meta-Optimization Team ===
+    print("  Meta-Optimization Team:")
+    backtester = Backtester(bus, config)
+    print(f"   13.  Backtester         — Tests strategies against price history")
+    regime = RegimeDetector(bus, config)
+    print(f"   14.  Regime Detector    — Trending/ranging/volatile market detection")
+    optimizer = StrategyOptimizer(bus, config)
+    print(f"   15.  Strategy Optimizer — Auto-tunes rotation, leverage, thresholds")
+    risk_sentinel = RiskSentinel(bus, config, portfolio_mgr)
+    print(f"   16.  Risk Sentinel      — Real-time drawdown & crash protection")
+    speed_coach = SpeedCoach(bus, config, portfolio_mgr)
+    print(f"   17.  Speed Coach        — Wakes up idle traders, deploys cash")
+    print()
+
     dash = Dashboard(portfolio_mgr, auditor, evaluator, compounder,
-                     volatility, traders, config)
+                     volatility, traders, config,
+                     backtester=backtester, regime=regime,
+                     optimizer=optimizer, risk_sentinel=risk_sentinel,
+                     speed_coach=speed_coach)
 
     print(f"  Support: Portfolio Manager, Auditor, Evaluator, Compounder, Dashboard")
-    print(f"  Total agents: {12 + len(traders) + 5}")
+    print(f"  Total agents: {17 + len(traders) + 5}")
     print()
     print("  COMPETITION ACTIVE. May the best trader win.\n")
 
@@ -147,6 +170,11 @@ async def main():
         asyncio.create_task(auditor.run(), name="auditor"),
         asyncio.create_task(evaluator.run(), name="evaluator"),
         asyncio.create_task(compounder.run(), name="compounder"),
+        asyncio.create_task(backtester.run(), name="backtester"),
+        asyncio.create_task(regime.run(), name="regime_detector"),
+        asyncio.create_task(optimizer.run(), name="strategy_optimizer"),
+        asyncio.create_task(risk_sentinel.run(), name="risk_sentinel"),
+        asyncio.create_task(speed_coach.run(), name="speed_coach"),
         asyncio.create_task(dash.run(), name="dashboard"),
     ]
     for trader in traders:

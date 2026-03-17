@@ -85,6 +85,7 @@ class TraderAgent:
         # Track my positions and what I own
         self.my_positions: set = set()
         self.pending_symbols: set = set()
+        self.position_open_time: dict[str, float] = {}  # symbol -> time opened
         self.compound_multiplier: float = 1.0
 
         # Learned intelligence from coaching
@@ -93,6 +94,15 @@ class TraderAgent:
         self.leverage_overrides: dict[str, int] = {}
         self.bad_combos: dict[str, float] = {}
         self.hot_coins: list[str] = []  # Coins the coach says are winners
+
+        # Dynamic optimization from meta-agents
+        self.dynamic_profit_target: float = 0.02
+        self.dynamic_loss_limit: float = -0.15
+        self.dynamic_leverage_mult: float = 1.0
+        self.dynamic_threshold_mult: float = 1.0
+        self.market_regime: str = "ranging"
+        self.regime_coins: list[str] = []
+        self.defensive_mode: bool = False
 
         # Competitive drive
         self.original_style = style
@@ -228,16 +238,24 @@ class TraderAgent:
             price_change_pct = (price - pos.entry_price) / pos.entry_price
             margin_return_pct = price_change_pct * pos.leverage
 
-            # SCALP STRATEGY: tiny profit target, wide loss tolerance
-            # Prices oscillate — grab small wins constantly, let losers recover
-            # At 30x, 1% margin profit = 0.03% price move (happens every few seconds)
-            profit_target = 0.01 if self._desperation < 0.5 else 0.005
-            loss_limit = -0.40 if self._desperation < 0.5 else -0.30
+            # SYMMETRIC TARGETS: each win = each loss in size
+            # +3% margin profit / -3% margin loss
+            # At 30x leverage, 3% margin = 0.1% price move
+            profit_target = 0.03
+            loss_limit = -0.03
+            if self._desperation > 0.5:
+                profit_target = 0.02
+                loss_limit = -0.02
+            if self.defensive_mode:
+                profit_target = 0.015
+                loss_limit = -0.015
 
             if margin_return_pct > profit_target:
                 symbols_to_sell.append((sym, "profit_rotate"))
             elif margin_return_pct < loss_limit:
                 symbols_to_sell.append((sym, "loss_rotate"))
+
+            # With symmetric targets, patience is fine — wait for target or loss
 
         for sym, reason in symbols_to_sell:
             price = self.latest_prices.get(sym, 0)
@@ -324,8 +342,10 @@ class TraderAgent:
             self.pending_symbols.discard(symbol)
             if payload.get("side") == "BUY":
                 self.my_positions.add(symbol)
+                self.position_open_time[symbol] = time.time()
             elif payload.get("side") == "SELL":
                 self.my_positions.discard(symbol)
+                self.position_open_time.pop(symbol, None)
 
     # ─── COMPETITIVE INTELLIGENCE ───
 
@@ -399,6 +419,20 @@ class TraderAgent:
         # Sort by weighted profit across top performers
         return sorted(winning_coins, key=winning_coins.get, reverse=True)
 
+    def _find_movers(self) -> list[str]:
+        """Find coins with the most price movement right now.
+        These are the ones worth trading — dead coins waste time."""
+        price_changes: dict[str, float] = {}
+        for sym, vol_data in self.volatility_data.items():
+            v = vol_data.get("volatility_pct", 0)
+            if v > 0:
+                price_changes[sym] = v
+        # If no volatility data, check which coins winners are profiting on
+        if not price_changes:
+            return self._steal_winning_coins()
+        # Sort by most volatile first
+        return sorted(price_changes, key=price_changes.get, reverse=True)
+
     def _competitive_score_adjust(self, symbol: str, base_score: float) -> float:
         """Adjust a signal score based on competitive intelligence.
         STEAL from winners, avoid losers' mistakes."""
@@ -444,6 +478,26 @@ class TraderAgent:
 
             if event.type == EventType.STRATEGY_ADJUSTMENT:
                 self._apply_adjustment(event.payload)
+                continue
+
+            if event.type == EventType.OPTIMIZER_UPDATE:
+                self._apply_optimizer(event.payload)
+                continue
+
+            if event.type == EventType.MARKET_REGIME:
+                self._apply_regime(event.payload)
+                continue
+
+            if event.type == EventType.RISK_ALERT:
+                self._apply_risk_alert(event.payload)
+                continue
+
+            if event.type == EventType.SPEED_REPORT:
+                # If I'm one of the idle traders, force deploy cash now
+                for lazy in event.payload.get("idle_traders", []):
+                    if lazy.get("trader_id") == self.trader_id:
+                        asyncio.create_task(self._deploy_idle_cash())
+                        break
                 continue
 
             if event.type == EventType.COMPOUND_TRIGGER:
@@ -515,9 +569,13 @@ class TraderAgent:
 
     def _get_leverage(self, symbol: str) -> int:
         if symbol in self.leverage_overrides:
-            return self.leverage_overrides[symbol]
-        return self.volatility_data.get(symbol, {}).get(
-            "recommended_leverage", self.config["trading"]["default_leverage"])
+            base = self.leverage_overrides[symbol]
+        else:
+            base = self.volatility_data.get(symbol, {}).get(
+                "recommended_leverage", self.config["trading"]["default_leverage"])
+        # Apply dynamic multiplier from optimizer/risk sentinel
+        adjusted = int(base * self.dynamic_leverage_mult)
+        return max(5, min(self.config["trading"]["max_leverage"], adjusted))
 
     def _get_combo_penalty(self, symbol: str) -> float:
         penalty = 0.0
@@ -567,10 +625,11 @@ class TraderAgent:
 
         leverage = self._get_leverage(symbol)
 
-        if buy_score >= self.threshold:
+        effective_threshold = self.threshold * self.dynamic_threshold_mult
+        if buy_score >= effective_threshold:
             await self._emit_trade(symbol, Side.BUY, buy_score, leverage)
             self.last_trade_signal[symbol] = now
-        elif sell_score >= self.threshold:
+        elif sell_score >= effective_threshold:
             await self._emit_trade(symbol, Side.SELL, sell_score, leverage)
             self.last_trade_signal[symbol] = now
 
@@ -697,32 +756,21 @@ class TraderAgent:
                     lev = self._get_leverage(sc)
                     candidates.append((sc, 0.7, lev))  # Top priority — stolen from winners
 
-        # Boost hot coins from the coach
-        for hc in self.hot_coins:
-            if (hc not in actual_positions and
-                    hc not in self.pending_symbols and
-                    not self._is_blocked(hc) and
-                    self.latest_prices.get(hc)):
-                already_in = any(c[0] == hc for c in candidates)
-                if not already_in:
-                    lev = self._get_leverage(hc)
-                    candidates.append((hc, 0.6, lev))
-
         if not candidates:
-            # Fallback: coins with price data, but prefer MY coins (affinity)
-            all_syms = list(self.latest_prices.keys())
-            # Sort by affinity so each trader picks different fallback coins
-            all_syms.sort(key=lambda s: self._coin_affinity(s), reverse=True)
-            for sym in all_syms:
+            # Fallback: find coins that are MOVING — sort by recent volatility
+            # But ONLY if analysts have any buy signals for them
+            movers = self._find_movers()
+            for sym in movers:
                 if (sym not in actual_positions and
                         sym not in self.pending_symbols and
-                        not self._is_blocked(sym)):
-                    intel = self._get_rival_intel(sym)
-                    # Skip coins where 10+ rivals already are
-                    if intel["holders"] >= 10:
-                        continue
+                        not self._is_blocked(sym) and
+                        self.latest_prices.get(sym)):
+                    # Check if any analyst has a buy signal for this coin
+                    sym_sigs = self.signals.get(sym, {})
+                    has_buy = any(d == "buy" for d, s, t in sym_sigs.values() if now - t < 300)
+                    score = 0.5 if has_buy else 0.25  # Much lower score without analyst backing
                     lev = self._get_leverage(sym)
-                    candidates.append((sym, 0.4, lev))
+                    candidates.append((sym, score, lev))
                     if len(candidates) >= slots:
                         break
 
@@ -752,3 +800,35 @@ class TraderAgent:
         self.leverage_overrides = payload.get("leverage_overrides", {})
         self.bad_combos = payload.get("bad_combos", {})
         self.hot_coins = payload.get("hot_coins", [])
+
+    def _apply_optimizer(self, payload: dict):
+        """Apply strategy optimizer recommendations."""
+        self.dynamic_profit_target = payload.get("profit_target", self.dynamic_profit_target)
+        self.dynamic_loss_limit = payload.get("loss_limit", self.dynamic_loss_limit)
+        opt_lev = payload.get("leverage", 30)
+        self.dynamic_leverage_mult = opt_lev / 30.0  # relative to default
+        self.dynamic_threshold_mult = payload.get("threshold_mult", 1.0)
+
+    def _apply_regime(self, payload: dict):
+        """Adjust strategy based on market regime."""
+        self.market_regime = payload.get("regime", "ranging")
+        strategy = payload.get("strategy", {})
+        self.regime_coins = payload.get("hot_regime_coins", [])
+
+        # Regime affects entry threshold
+        thresh_mult = strategy.get("threshold_mult", 1.0)
+        self.dynamic_threshold_mult = thresh_mult
+
+        # Regime affects profit/loss targets
+        pt_mult = strategy.get("profit_target_mult", 1.0)
+        ll_mult = strategy.get("loss_limit_mult", 1.0)
+        self.dynamic_profit_target = max(0.005, 0.02 * pt_mult)
+        self.dynamic_loss_limit = min(-0.02, -0.15 * ll_mult)
+
+    def _apply_risk_alert(self, payload: dict):
+        """React to risk alerts — go defensive when needed."""
+        self.defensive_mode = payload.get("defensive_mode", False)
+        if self.defensive_mode:
+            # Cut leverage and be pickier
+            self.dynamic_leverage_mult *= payload.get("leverage_multiplier", 0.5)
+            self.dynamic_threshold_mult *= payload.get("threshold_multiplier", 1.5)

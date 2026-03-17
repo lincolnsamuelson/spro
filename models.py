@@ -24,6 +24,11 @@ class EventType(Enum):
     COMPOUND_TRIGGER = "compound_trigger"
     TRADER_FIRED = "trader_fired"
     HEARTBEAT = "heartbeat"
+    MARKET_REGIME = "market_regime"
+    BACKTEST_RESULT = "backtest_result"
+    RISK_ALERT = "risk_alert"
+    SPEED_REPORT = "speed_report"
+    OPTIMIZER_UPDATE = "optimizer_update"
     SHUTDOWN = "shutdown"
 
 
