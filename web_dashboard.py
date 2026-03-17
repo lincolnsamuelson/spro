@@ -21,9 +21,32 @@ with open(CONFIG_FILE) as f:
 COIN_IDS = CONFIG["trading"]["pairs"]
 
 
+LEARNINGS_FILE = BASE_DIR / "learnings.json"
+
+
 def load_portfolio():
+    if not PORTFOLIO_FILE.exists():
+        return {
+            "cash": CONFIG["trading"]["starting_balance"],
+            "realized_pnl": 0,
+            "peak_value": CONFIG["trading"]["starting_balance"],
+            "positions": {},
+            "win_streak": 0,
+            "total_wins": 0,
+            "total_losses": 0,
+        }
     with open(PORTFOLIO_FILE) as f:
         return json.load(f)
+
+
+def load_learnings():
+    if not LEARNINGS_FILE.exists():
+        return {"blacklist": [], "probation": [], "rules_learned": [], "exit_patterns": {}}
+    try:
+        with open(LEARNINGS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"blacklist": [], "probation": [], "rules_learned": [], "exit_patterns": {}}
 
 
 def parse_logs():
@@ -31,7 +54,10 @@ def parse_logs():
     portfolio_snapshots = []
     signals = []
     latest_prices = {}
-    price_ticks = []  # all price updates for chart
+    price_ticks = []
+
+    if not LOG_FILE.exists():
+        return trades, portfolio_snapshots, signals, latest_prices, price_ticks
 
     with open(LOG_FILE) as f:
         for line in f:
@@ -175,11 +201,15 @@ def build_chart_series(trades, price_ticks, portfolio_snapshots, starting_balanc
     chart_colors = ['#3b82f6', '#8b5cf6', '#ec4899', '#f97316', '#22c55e',
                     '#eab308', '#06b6d4', '#ef4444', '#10b981', '#6366f1']
     for sym in sorted(held_symbols):
+        data = position_series[sym]
+        # Skip positions that never had value
+        if max(data) == 0:
+            continue
         c = chart_colors[color_idx % len(chart_colors)]
         color_idx += 1
         datasets.append({
-            "label": sym.upper(),
-            "data": position_series[sym],
+            "label": sym.split('-')[0].upper(),
+            "data": data,
             "color": c,
         })
 
@@ -203,6 +233,7 @@ async def fetch_live_prices(session):
 
 async def api_data(request):
     portfolio = load_portfolio()
+    learnings = load_learnings()
     trades, snapshots, signals, log_prices, price_ticks = parse_logs()
 
     session = ClientSession()
@@ -210,10 +241,8 @@ async def api_data(request):
     await session.close()
 
     prices = {}
-    # Always start with log prices as fallback
     for coin_id, price in log_prices.items():
         prices[coin_id] = {"price": price, "change_24h": 0}
-    # Overlay live prices if available
     if live:
         for coin_id, data in live.items():
             prices[coin_id] = {
@@ -221,28 +250,45 @@ async def api_data(request):
                 "change_24h": data.get("usd_24h_change", 0),
             }
 
-    # Calculate current portfolio value with live prices
+    # Calculate portfolio value with leverage
     total_value = portfolio["cash"]
     positions_detail = []
     for sym, pos in portfolio.get("positions", {}).items():
         current_price = prices.get(sym, {}).get("price", pos["entry_price"])
-        qty = pos["quantity"]
         entry = pos["entry_price"]
-        market_value = current_price * qty
-        unrealized_pnl = (current_price - entry) * qty
-        pnl_pct = ((current_price - entry) / entry * 100) if entry else 0
-        total_value += market_value
+        leverage = pos.get("leverage", 1)
+        margin = pos.get("margin", 0)
+        qty = pos["quantity"]
+
+        # Leveraged P&L
+        if margin > 0 and entry > 0:
+            price_change_pct = (current_price - entry) / entry
+            unrealized_pnl = margin * price_change_pct * leverage
+            equity = margin + unrealized_pnl
+            notional = margin * leverage
+        else:
+            unrealized_pnl = (current_price - entry) * qty
+            equity = current_price * qty
+            notional = equity
+
+        pnl_pct = (unrealized_pnl / margin * 100) if margin > 0 else (((current_price - entry) / entry * 100) if entry else 0)
+        total_value += max(equity, 0)
+
         positions_detail.append({
             "symbol": sym,
             "side": pos["side"],
             "quantity": qty,
             "entry_price": entry,
             "current_price": current_price,
-            "market_value": market_value,
-            "unrealized_pnl": unrealized_pnl,
-            "pnl_pct": pnl_pct,
+            "leverage": leverage,
+            "margin": round(margin, 2),
+            "notional": round(notional, 2),
+            "equity": round(max(equity, 0), 2),
+            "unrealized_pnl": round(unrealized_pnl, 2),
+            "pnl_pct": round(pnl_pct, 2),
             "stop_loss": pos.get("stop_loss", 0),
-            "take_profit": pos.get("take_profit", 0),
+            "trailing_stop": pos.get("trailing_stop", 0),
+            "highest_price": pos.get("highest_price", 0),
         })
 
     starting = CONFIG["trading"]["starting_balance"]
@@ -309,9 +355,22 @@ async def api_data(request):
             "mode": CONFIG["trading"]["mode"],
             "max_positions": CONFIG["risk"]["max_positions"],
             "max_drawdown_pct": round(CONFIG["risk"]["max_drawdown"] * 100, 1),
-            "stop_loss_pct": round(CONFIG["risk"].get("default_stop_loss_pct", 0.025) * 100, 1),
-            "take_profit_pct": round(CONFIG["risk"].get("default_take_profit_pct", 0.05) * 100, 1),
+            "stop_loss_pct": round(CONFIG["risk"].get("default_stop_loss_pct", 0.015) * 100, 1),
+            "trailing_stop_pct": round(CONFIG["risk"].get("trailing_stop_pct", 0.01) * 100, 1),
+            "default_leverage": CONFIG["trading"].get("default_leverage", 15),
+            "max_leverage": CONFIG["trading"].get("max_leverage", 25),
+            "risk_per_trade": round(CONFIG["risk"].get("max_risk_per_trade", 0.5) * 100, 1),
         },
+        "learnings": {
+            "blacklist": learnings.get("blacklist", []),
+            "probation": learnings.get("probation", []),
+            "rules_count": len(learnings.get("rules_learned", [])),
+            "recent_rules": learnings.get("rules_learned", [])[-5:],
+            "exit_patterns": learnings.get("exit_patterns", {}),
+        },
+        "win_streak": portfolio.get("win_streak", 0),
+        "total_wins": portfolio.get("total_wins", 0),
+        "total_losses": portfolio.get("total_losses", 0),
     })
 
 
@@ -595,7 +654,7 @@ HTML = r"""<!DOCTYPE html>
 <body>
 
 <div class="header">
-  <h1><span>CRYPTO</span> PAPER TRADER</h1>
+  <h1><span>CRYPTO</span> LEVERAGED FUTURES TRADER</h1>
   <div class="header-meta">
     <span class="live-dot"></span>
     <span id="last-updated">Loading...</span>
@@ -674,7 +733,7 @@ HTML = r"""<!DOCTYPE html>
       <div class="card-body" style="padding:0;">
         <table>
           <thead><tr>
-            <th>Asset</th><th>Side</th><th>Entry</th><th>Current</th><th>Qty</th><th>P&L</th><th>SL / TP</th>
+            <th>Asset</th><th>Lev</th><th>Margin</th><th>Notional</th><th>Entry</th><th>Current</th><th>Equity</th><th>P&L</th><th>Trail Stop</th>
           </tr></thead>
           <tbody id="positions-body"></tbody>
         </table>
@@ -883,17 +942,9 @@ function render(d) {
 
   // Risk
   const riskEl = document.getElementById('kpi-risk');
-  let riskLevel, riskClass;
-  if (p.drawdown > 10 || d.positions.length >= d.config.max_positions) {
-    riskLevel = 'HIGH'; riskClass = 'risk-high';
-  } else if (p.drawdown > 5 || d.positions.length >= d.config.max_positions - 1) {
-    riskLevel = 'MEDIUM'; riskClass = 'risk-medium';
-  } else {
-    riskLevel = 'LOW'; riskClass = 'risk-low';
-  }
-  riskEl.innerHTML = `<span class="risk-level ${riskClass}">${riskLevel}</span>`;
+  riskEl.innerHTML = `<span class="risk-level risk-high">MAX</span>`;
   document.getElementById('kpi-risk-detail').textContent =
-    `DD: ${fmt(p.drawdown)}% / ${d.config.max_drawdown_pct}% max`;
+    `${d.config.default_leverage}-${d.config.max_leverage}x lev | DD: ${fmt(p.drawdown)}%/${d.config.max_drawdown_pct}%`;
 
   // Allocation bar
   const totalVal = p.total_value || 1;
@@ -903,11 +954,11 @@ function render(d) {
   legend.innerHTML = '';
 
   let segments = [];
-  if (p.cash > 0) segments.push({label: 'Cash', value: p.cash, color: '#334155'});
+  if (p.cash > 0.01) segments.push({label: 'Cash (IDLE)', value: p.cash, color: '#7f1d1d'});
   d.positions.forEach((pos, i) => {
     segments.push({
-      label: pos.symbol.toUpperCase(),
-      value: pos.market_value,
+      label: pos.symbol.split('-')[0].toUpperCase() + ' ' + (pos.leverage||1) + 'x',
+      value: pos.equity || pos.market_value || 0,
       color: COLORS[i % COLORS.length],
     });
   });
@@ -925,22 +976,24 @@ function render(d) {
   // Positions table
   const posBody = document.getElementById('positions-body');
   if (d.positions.length === 0) {
-    posBody.innerHTML = '<tr><td colspan="7" class="empty-state">No open positions</td></tr>';
+    posBody.innerHTML = '<tr><td colspan="9" class="empty-state">No open positions — deploying capital...</td></tr>';
   } else {
     posBody.innerHTML = d.positions.map(pos => `
       <tr>
-        <td style="font-weight:600;">${pos.symbol.toUpperCase()}</td>
-        <td class="side-${pos.side}">${pos.side.toUpperCase()}</td>
+        <td style="font-weight:600;">${pos.symbol.split('-')[0].toUpperCase()}</td>
+        <td><span style="color:var(--yellow);font-weight:600;">${pos.leverage || 1}x</span></td>
+        <td>$${fmt(pos.margin || 0)}</td>
+        <td>$${fmt(pos.notional || 0)}</td>
         <td>${fmtPrice(pos.entry_price)}</td>
         <td>${fmtPrice(pos.current_price)}</td>
-        <td>${fmt(pos.quantity, 4)}</td>
+        <td>$${fmt(pos.equity || 0)}</td>
         <td class="${pnlClass(pos.unrealized_pnl)}">
           ${pos.unrealized_pnl >= 0 ? '+' : ''}$${fmt(pos.unrealized_pnl)}
           <br><span style="font-size:11px;">(${pos.pnl_pct >= 0 ? '+' : ''}${fmt(pos.pnl_pct)}%)</span>
         </td>
         <td style="font-size:11px;">
-          <span class="negative">${fmtPrice(pos.stop_loss)}</span> /
-          <span class="positive">${fmtPrice(pos.take_profit)}</span>
+          <span class="negative">SL: ${fmtPrice(pos.stop_loss)}</span><br>
+          <span class="positive">TS: ${fmtPrice(pos.trailing_stop || 0)}</span>
         </td>
       </tr>
     `).join('');
@@ -1003,13 +1056,25 @@ function render(d) {
   }
 
   // Config
+  const bl = d.learnings.blacklist.map(s => s.split('-')[0].toUpperCase()).join(', ') || 'None';
+  const pr = d.learnings.probation.map(s => s.split('-')[0].toUpperCase()).join(', ') || 'None';
+  const lastRule = d.learnings.recent_rules.length ? d.learnings.recent_rules[d.learnings.recent_rules.length - 1] : 'No rules yet';
+  const exits = d.learnings.exit_patterns || {};
+  const wr = (d.total_wins + d.total_losses) > 0 ? (d.total_wins / (d.total_wins + d.total_losses) * 100).toFixed(0) : '0';
   document.getElementById('config-body').innerHTML = `
-    <div><span style="color:var(--text-dim);">Mode:</span> <strong>${d.config.mode.toUpperCase()}</strong></div>
-    <div><span style="color:var(--text-dim);">Max Positions:</span> <strong>${d.config.max_positions}</strong></div>
-    <div><span style="color:var(--text-dim);">Max Drawdown:</span> <strong>${d.config.max_drawdown_pct}%</strong></div>
+    <div><span style="color:var(--text-dim);">Mode:</span> <strong>LEVERAGED FUTURES (${d.config.mode.toUpperCase()})</strong></div>
+    <div><span style="color:var(--text-dim);">Leverage:</span> <strong>${d.config.default_leverage}x — ${d.config.max_leverage}x</strong></div>
+    <div><span style="color:var(--text-dim);">Risk/Trade:</span> <strong>${d.config.risk_per_trade}%</strong></div>
     <div><span style="color:var(--text-dim);">Stop Loss:</span> <strong>${d.config.stop_loss_pct}%</strong></div>
-    <div><span style="color:var(--text-dim);">Take Profit:</span> <strong>${d.config.take_profit_pct}%</strong></div>
-    <div><span style="color:var(--text-dim);">Starting Balance:</span> <strong>$${p.starting_balance}</strong></div>
+    <div><span style="color:var(--text-dim);">Trail Stop:</span> <strong>${d.config.trailing_stop_pct}%</strong></div>
+    <div><span style="color:var(--text-dim);">Max Drawdown:</span> <strong>${d.config.max_drawdown_pct}%</strong></div>
+    <div><span style="color:var(--text-dim);">Win Rate:</span> <strong>${wr}% (${d.total_wins}W / ${d.total_losses}L)</strong></div>
+    <div><span style="color:var(--text-dim);">Win Streak:</span> <strong>${d.win_streak}</strong></div>
+    <div style="grid-column: span 2;"><span style="color:var(--text-dim);">Blacklisted:</span> <strong class="negative">${bl}</strong></div>
+    <div style="grid-column: span 2;"><span style="color:var(--text-dim);">Probation:</span> <strong class="neutral">${pr}</strong></div>
+    <div style="grid-column: span 2;"><span style="color:var(--text-dim);">Exits:</span> <strong>Trail: ${exits.trailing_stop||0} | Stop: ${exits.stop_loss||0} | Liq: ${exits.liquidated||0} | Signal: ${exits.signal_sell||0}</strong></div>
+    <div style="grid-column: span 4;"><span style="color:var(--text-dim);">Last Rule:</span> <strong>${lastRule}</strong></div>
+    <div style="grid-column: span 2;"><span style="color:var(--text-dim);">Rules Learned:</span> <strong>${d.learnings.rules_count}</strong></div>
   `;
 
   // Mode badge
