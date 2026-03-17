@@ -16,8 +16,8 @@
     ],
     "starting_balance": 200.0,
     "mode": "paper",
-    "default_leverage": 10,
-    "max_leverage": 20
+    "default_leverage": 15,
+    "max_leverage": 25
   },
   "market_data": {
     "poll_interval_seconds": 15,
@@ -35,8 +35,8 @@
     "ema_slow": 21
   },
   "strategy": {
-    "signal_threshold": 0.40,
-    "cooldown_seconds": 60,
+    "signal_threshold": 0.30,
+    "cooldown_seconds": 30,
     "weights": {
       "rsi": 0.15,
       "macd": 0.20,
@@ -48,11 +48,11 @@
     }
   },
   "risk": {
-    "max_risk_per_trade": 0.25,
+    "max_risk_per_trade": 0.50,
     "max_positions": 9999,
-    "max_drawdown": 0.50,
-    "default_stop_loss_pct": 0.02,
-    "trailing_stop_pct": 0.015,
+    "max_drawdown": 0.70,
+    "default_stop_loss_pct": 0.015,
+    "trailing_stop_pct": 0.01,
     "simulated_slippage_pct": 0.001,
     "min_cash_reserve": 0.01
   },

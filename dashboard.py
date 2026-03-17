@@ -129,6 +129,25 @@ class Dashboard:
             top = eval_summary["top_coins"][:5]
             top_parts = [f"{c['symbol'][:8].upper()}:${c['pnl']:+.2f}" for c in top]
             lines.append(f"    Best coins: {' | '.join(top_parts)}")
+        # Learnings
+        blacklist = eval_summary.get("blacklist", [])
+        probation = eval_summary.get("probation", [])
+        if blacklist:
+            lines.append(f"    BLACKLISTED: {', '.join(s[:8].upper() for s in blacklist[:8])}")
+        if probation:
+            lines.append(f"    PROBATION:   {', '.join(s[:8].upper() for s in probation[:8])}")
+        recent_rules = eval_summary.get("recent_rules", [])
+        if recent_rules:
+            lines.append(f"    Last rule: {recent_rules[-1][:75]}")
+        exits = eval_summary.get("exit_patterns", {})
+        if any(exits.values()):
+            lines.append(
+                f"    Exits: trail:{exits.get('trailing_stop',0)} "
+                f"stop:{exits.get('stop_loss',0)} "
+                f"liq:{exits.get('liquidated',0)} "
+                f"signal:{exits.get('signal_sell',0)} "
+                f"| Rules:{eval_summary.get('rules_count',0)}"
+            )
         lines.append("-" * w)
 
         # Active signals (compact)
