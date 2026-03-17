@@ -24,6 +24,7 @@ class StrategyEngine:
         self.volatility_data: dict[str, dict] = {}
         self.compound_multiplier: float = 1.0
         self.adjustments_applied: int = 0
+        self.held_symbols: set = set()
 
     async def run(self):
         while True:
@@ -42,6 +43,9 @@ class StrategyEngine:
                 self._apply_adjustment(event.payload)
             elif event.type == EventType.COMPOUND_TRIGGER:
                 self.compound_multiplier = event.payload.get("multiplier", 1.0)
+                await self._deploy_idle_cash(event.payload)
+            elif event.type == EventType.PORTFOLIO_UPDATE:
+                self.held_symbols = set(event.payload.get("position_symbols", []))
 
     def _on_volatility(self, payload: dict):
         symbol = payload["symbol"]
@@ -152,6 +156,61 @@ class StrategyEngine:
             },
             source="strategy",
         ))
+
+    async def _deploy_idle_cash(self, payload: dict):
+        """When compounder detects idle cash, scan ALL coins and pick the best
+        one to deploy into immediately. No waiting for signals."""
+        now = time.time()
+
+        # Score every coin we have signals for but don't already hold
+        candidates = []
+        for symbol, sigs in self.signals.items():
+            if symbol in self.held_symbols:
+                continue
+            if not self.latest_prices.get(symbol):
+                continue
+
+            # Expire old signals
+            active = {k: v for k, v in sigs.items() if now - v[2] < 120}
+            if not active:
+                continue
+
+            # Calculate buy score
+            buy_score = 0.0
+            total_weight = 0.0
+            for ind, weight in self.weights.items():
+                if ind in active:
+                    d, s, _ = active[ind]
+                    total_weight += weight
+                    if d == Side.BUY.value:
+                        buy_score += weight * s
+
+            if total_weight > 0:
+                buy_score /= total_weight
+                leverage = self.volatility_data.get(symbol, {}).get(
+                    "recommended_leverage", self.config["trading"]["default_leverage"])
+                candidates.append((symbol, buy_score, leverage))
+
+        if not candidates:
+            # No signals at all? Pick the highest volatility coin we don't hold
+            for sym in self.volatility_data:
+                if sym not in self.held_symbols and sym in self.latest_prices:
+                    lev = self.volatility_data[sym].get("recommended_leverage",
+                            self.config["trading"]["default_leverage"])
+                    candidates.append((sym, 0.5, lev))
+                    break
+
+        if not candidates:
+            return
+
+        # Pick the best candidate
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_symbol, best_score, best_leverage = candidates[0]
+
+        # Deploy with minimum threshold of 0.2 (very aggressive)
+        if best_score >= 0.2:
+            await self._emit_trade_signal(best_symbol, Side.BUY, max(best_score, 0.5), best_leverage)
+            self.last_trade_signal[best_symbol] = now
 
     def _apply_adjustment(self, payload: dict):
         adjustments = payload.get("weight_adjustments", {})

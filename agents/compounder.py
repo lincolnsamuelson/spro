@@ -69,8 +69,8 @@ class Compounder:
             await asyncio.sleep(self.reinvest_delay)
             now = time.time()
 
-            # If we have significant idle cash, signal to deploy it
-            if self.cash_available > 1.0 and now - self.last_compound_time > self.reinvest_delay:
+            # If ANY idle cash exists, signal to deploy it immediately
+            if self.cash_available > 0.10 and now - self.last_compound_time > self.reinvest_delay:
                 await self.bus.publish(Event(
                     type=EventType.COMPOUND_TRIGGER,
                     payload={
