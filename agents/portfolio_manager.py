@@ -232,8 +232,8 @@ class PortfolioManager:
                 await self._fire_trader(tid)
 
     async def _fire_trader(self, trader_id: str):
-        """Fire an underperforming trader: close all positions, reset with fresh
-        $50 and all accumulated learnings applied."""
+        """Fire an underperforming trader: close all positions, new agent
+        inherits whatever cash remains. No fresh capital injection."""
         async with self._lock:
             t = self.traders.get(trader_id)
             if not t:
@@ -251,19 +251,21 @@ class PortfolioManager:
                 t.cash += returned
                 del t.positions[sym]
 
+            old_value = round(t.cash, 2)  # what's left after liquidation
+
             # Bump generation
             t.times_fired += 1
             t.generation = t.generation + 1
             gen_label = self._roman(t.generation)
             base_name = TRADER_NAMES.get(trader_id, trader_id.upper())
             t.name = f"{base_name} {gen_label}"
-            old_value = round(t.total_value, 2)
 
-            # Reset with fresh starting cash
-            t.cash = t.starting_cash
+            # New agent inherits whatever cash remains — NO fresh capital
+            # Just reset stats and peak so the 5% fire threshold is relative to current cash
+            t.starting_cash = t.cash
             t.realized_pnl = 0.0
-            t.total_value = t.starting_cash
-            t.peak_value = t.starting_cash
+            t.total_value = t.cash
+            t.peak_value = t.cash
             t.win_streak = 0
             t.total_wins = 0
             t.total_losses = 0

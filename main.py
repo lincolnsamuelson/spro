@@ -35,7 +35,7 @@ async def main():
     per_trader = config["trading"]["starting_balance"]  # $50 each
 
     print("=" * 70)
-    print("  TRADER COMPETITION — 5 Competitors x $50 Each")
+    print(f"  TRADER COMPETITION — 5 Competitors x ${per_trader:.0f} Each")
     print("=" * 70)
     print(f"  Mode:       PAPER (simulated)")
     print(f"  Per Trader: ${per_trader:.2f}")

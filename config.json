@@ -14,7 +14,7 @@
       "okb", "kucoin-shares", "nexo", "flare-networks", "beldex",
       "morpho", "pump-fun"
     ],
-    "starting_balance": 50.0,
+    "starting_balance": 200.0,
     "mode": "paper",
     "default_leverage": 15,
     "max_leverage": 25
