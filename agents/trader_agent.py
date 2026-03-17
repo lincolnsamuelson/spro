@@ -104,7 +104,14 @@ class TraderAgent:
         await asyncio.gather(
             self._signal_loop(),
             self._portfolio_loop(),
+            self._idle_cash_loop(),
         )
+
+    async def _idle_cash_loop(self):
+        """Continuously check for idle cash and deploy it immediately."""
+        while True:
+            await asyncio.sleep(2)
+            await self._deploy_idle_cash()
 
     async def _portfolio_loop(self):
         while True:
@@ -284,16 +291,16 @@ class TraderAgent:
             # Check if I already hold or am pending this symbol
             if symbol in self.my_positions or symbol in self.pending_symbols:
                 return
-            # Also check global positions to avoid duplicates across traders
-            if symbol in self.portfolio_mgr.portfolio.positions:
-                return
             if len(self.my_positions) + len(self.pending_symbols) >= self.max_positions:
                 return
 
-            # Position sizing: my capital slice / my max positions
-            margin = self.capital / self.max_positions
-            # But never more than available cash
-            available = self.portfolio_mgr.portfolio.cash - 0.01
+            # Read MY cash from the portfolio manager
+            my_state = self.portfolio_mgr.traders.get(self.trader_id)
+            if not my_state:
+                return
+            available = my_state.cash - 0.01
+            # Position sizing: spread across max positions
+            margin = available / max(self.max_positions - len(self.my_positions) - len(self.pending_symbols), 1)
             margin = min(margin, available)
             if margin < 0.10:
                 return
@@ -343,10 +350,13 @@ class TraderAgent:
             ))
 
     async def _deploy_idle_cash(self):
-        """Deploy idle cash into best available coins."""
+        """Deploy idle cash into best available coins — NEVER hold cash."""
         now = time.time()
-        available = self.portfolio_mgr.portfolio.cash - 0.01
-        if available < 0.10:
+        my_state = self.portfolio_mgr.traders.get(self.trader_id)
+        if not my_state:
+            return
+        available = my_state.cash - 0.01
+        if available < 0.05:
             return
 
         # How many more positions can I take?
@@ -358,8 +368,6 @@ class TraderAgent:
         candidates = []
         for symbol, sigs in self.signals.items():
             if symbol in self.my_positions or symbol in self.pending_symbols:
-                continue
-            if symbol in self.portfolio_mgr.portfolio.positions:
                 continue
             if self._is_blocked(symbol):
                 continue
@@ -386,11 +394,10 @@ class TraderAgent:
                     candidates.append((symbol, buy_score, leverage))
 
         if not candidates:
-            # Fallback: any coin with price data
+            # Fallback: any coin with price data — never sit idle
             for sym in self.latest_prices:
                 if (sym not in self.my_positions and
                         sym not in self.pending_symbols and
-                        sym not in self.portfolio_mgr.portfolio.positions and
                         not self._is_blocked(sym)):
                     lev = self._get_leverage(sym)
                     candidates.append((sym, 0.3, lev))

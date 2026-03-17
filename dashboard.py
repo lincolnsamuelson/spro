@@ -26,48 +26,59 @@ class Dashboard:
         os.system("clear" if os.name != "nt" else "cls")
         port = self.portfolio_mgr.portfolio
         summary = self.auditor.get_summary()
-        eval_summary = self.evaluator.get_summary()
         prices = self.portfolio_mgr.latest_prices
-        starting = self.portfolio_mgr.config["trading"]["starting_balance"]
-        pnl_pct = ((port.total_value - starting) / starting * 100) if starting > 0 else 0
+        scoreboard = self.portfolio_mgr.get_scoreboard()
 
         lines = []
-        w = 100
+        w = 110
 
         lines.append("=" * w)
         lines.append(
-            f"  SWARM TRADER  |  "
-            f"10 Researchers -> 5 Traders  |  "
-            f"Equity: ${port.total_value:.2f}  |  "
-            f"Cash: ${port.cash:.2f}  |  "
-            f"P&L: {pnl_pct:+.1f}%  |  "
-            f"Realized: ${port.realized_pnl:+.2f}"
-        )
-        win_rate = (port.total_wins / (port.total_wins + port.total_losses) * 100
-                    if (port.total_wins + port.total_losses) > 0 else 0)
-        streak_str = f"Win x{port.win_streak}" if port.win_streak > 0 else "---"
-        mult = self.compounder.get_multiplier()
-        lines.append(
-            f"  {len(prices)} coins | {len(port.positions)} positions | "
-            f"W/L: {port.total_wins}/{port.total_losses} ({win_rate:.0f}%) | "
-            f"Streak: {streak_str} | Multiplier: {mult:.1f}x | "
+            f"  TRADER COMPETITION  |  "
+            f"5 Competitors x $50  |  "
+            f"Total Pool: ${port.total_value:.2f}  |  "
+            f"{len(prices)} coins  |  "
             f"PAPER MODE"
         )
         lines.append("=" * w)
 
-        # Trader agents status
-        lines.append("  TRADER AGENTS")
+        # === SCOREBOARD ===
+        lines.append("")
+        lines.append("  SCOREBOARD")
+        lines.append(f"  {'Rank':<6}{'Trader':<20}{'Style':<20}{'Equity':>10}{'P&L':>10}{'P&L%':>8}{'Pos':>6}{'W/L':>10}{'WR%':>7}{'Streak':>8}")
+        lines.append("  " + "-" * 105)
+        for b in scoreboard:
+            pnl_sign = "+" if b["pnl"] >= 0 else ""
+            streak_str = f"x{b['win_streak']}" if b["win_streak"] > 0 else "---"
+            medal = {1: "1st", 2: "2nd", 3: "3rd"}.get(b["rank"], f"{b['rank']}th")
+            lines.append(
+                f"  {medal:<6}"
+                f"{b['trader_id']:<20}"
+                f"{b['style']:<20}"
+                f"${b['equity']:>8.2f}"
+                f"  {pnl_sign}${abs(b['pnl']):>7.2f}"
+                f"  {pnl_sign}{abs(b['pnl_pct']):>5.1f}%"
+                f"  {b['positions']:>4}"
+                f"  {b['wins']:>3}/{b['losses']:<3}"
+                f"  {b['win_rate']:>5.1f}%"
+                f"  {streak_str:>6}"
+            )
+        lines.append("")
+
+        # === TRADER DETAIL ===
+        lines.append("  TRADER STATUS")
         for t in self.traders:
+            my_state = self.portfolio_mgr.traders.get(t.trader_id)
+            cash = my_state.cash if my_state else 0
             pos_count = len(t.my_positions)
             pending = len(t.pending_symbols)
             lines.append(
-                f"    {t.trader_id:25s}  style:{t.style:18s}  "
+                f"    {t.trader_id:25s}  "
+                f"cash:${cash:>6.2f}  "
                 f"pos:{pos_count}/{t.max_positions}  "
                 f"pending:{pending}  "
                 f"signals:{t.signals_received:>5d}  "
-                f"trades:{t.trades_sent:>3d}  "
-                f"cooldown:{t.cooldown}s  "
-                f"thresh:{t.threshold:.2f}"
+                f"trades:{t.trades_sent:>3d}"
             )
         lines.append("-" * w)
 
@@ -83,69 +94,26 @@ class Dashboard:
             lines.append("  HOT COINS  (scanning...)")
         lines.append("-" * w)
 
-        # Open positions
+        # Open positions (grouped by trader)
         lines.append("  OPEN POSITIONS")
-        total_margin = 0
-        total_notional = 0
-        total_unrealized = 0
-        if port.positions:
-            for sym, pos in port.positions.items():
+        any_positions = False
+        for tid, t_state in self.portfolio_mgr.traders.items():
+            if not t_state.positions:
+                continue
+            any_positions = True
+            for sym, pos in t_state.positions.items():
                 equity = pos.margin + pos.unrealized_pnl
-                notional = pos.margin * pos.leverage
-                total_margin += pos.margin
-                total_notional += notional
-                total_unrealized += pos.unrealized_pnl
                 pnl_pct_pos = (pos.unrealized_pnl / pos.margin * 100) if pos.margin > 0 else 0
-                owner = pos.trader_id[:12] if pos.trader_id else "?"
                 lines.append(
-                    f"    {sym[:14].upper():16s} "
+                    f"    [{tid[:12]:12s}] "
+                    f"{sym[:14].upper():16s} "
                     f"{pos.leverage:2d}x  "
                     f"M:${pos.margin:>6.2f}  "
-                    f"N:${notional:>8.2f}  "
                     f"Eq:${equity:>6.2f}  "
-                    f"P&L:${pos.unrealized_pnl:>+6.2f}({pnl_pct_pos:>+5.1f}%)  "
-                    f"[{owner}]"
+                    f"P&L:${pos.unrealized_pnl:>+6.2f}({pnl_pct_pos:>+5.1f}%)"
                 )
-            lines.append(f"    {'─' * 85}")
-            deployed_pct = (total_margin / port.total_value * 100) if port.total_value > 0 else 0
-            lines.append(
-                f"    TOTALS  Margin:${total_margin:>7.2f}  "
-                f"Notional:${total_notional:>9.2f}  "
-                f"Unrealized:${total_unrealized:>+7.2f}  "
-                f"Deployed:{deployed_pct:.0f}%"
-            )
-        else:
+        if not any_positions:
             lines.append("    (no positions — deploying capital...)")
-        lines.append("-" * w)
-
-        # Evaluator
-        lines.append("  EVALUATOR")
-        lines.append(
-            f"    Evals:{eval_summary['evaluations_run']}  "
-            f"Efficiency:{eval_summary['avg_efficiency']}%  "
-            f"Thresh adj:{eval_summary['threshold_adjustment']:+.3f}"
-        )
-        # Trader performance
-        trader_perf = eval_summary.get("trader_performance", {})
-        if trader_perf:
-            tp_parts = []
-            for tid, tp in trader_perf.items():
-                tp_parts.append(f"{tid[:10]}:{tp['win_rate']:.0f}%/${tp['pnl']:+.2f}")
-            lines.append(f"    Traders: {' | '.join(tp_parts)}")
-        if eval_summary["indicator_performance"]:
-            parts = []
-            for ind, perf in eval_summary["indicator_performance"].items():
-                parts.append(f"{ind[:5]}:{perf['win_rate']:.0f}%/{perf['trades']}t")
-            lines.append(f"    {' | '.join(parts)}")
-        blacklist = eval_summary.get("blacklist", [])
-        probation = eval_summary.get("probation", [])
-        if blacklist:
-            lines.append(f"    BLACKLISTED: {', '.join(s[:8].upper() for s in blacklist[:8])}")
-        if probation:
-            lines.append(f"    PROBATION:   {', '.join(s[:8].upper() for s in probation[:8])}")
-        recent_rules = eval_summary.get("recent_rules", [])
-        if recent_rules:
-            lines.append(f"    Last rule: {recent_rules[-1][:80]}")
         lines.append("-" * w)
 
         # Recent trades
@@ -174,7 +142,6 @@ class Dashboard:
             f"  Trades:{summary['total_trades']}  "
             f"Win:{summary['win_rate']}%  "
             f"P&L:${summary['total_pnl']:.2f}  "
-            f"MaxDD:-{summary['max_drawdown']}%  "
             f"Events:{summary['events_processed']}"
         )
         lines.append("=" * w)

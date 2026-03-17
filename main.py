@@ -19,57 +19,56 @@ from agents.compounder import Compounder
 from dashboard import Dashboard
 
 
-# Trader pool: 5 independent traders with different strategies
+# 5 competitors — each starts with $50, same rules, different strategies
 TRADER_POOL = [
-    {"id": "momentum_1",  "style": "momentum_chaser", "capital_pct": 0.25, "max_pos": 5},
-    {"id": "momentum_2",  "style": "momentum_chaser", "capital_pct": 0.20, "max_pos": 5},
-    {"id": "breakout_1",  "style": "breakout_hunter",  "capital_pct": 0.20, "max_pos": 4},
-    {"id": "scalper_1",   "style": "scalper",           "capital_pct": 0.20, "max_pos": 6},
-    {"id": "reverter_1",  "style": "mean_reverter",     "capital_pct": 0.15, "max_pos": 4},
+    {"id": "momentum_1",  "style": "momentum_chaser", "max_pos": 5},
+    {"id": "momentum_2",  "style": "momentum_chaser", "max_pos": 5},
+    {"id": "breakout_1",  "style": "breakout_hunter",  "max_pos": 4},
+    {"id": "scalper_1",   "style": "scalper",           "max_pos": 6},
+    {"id": "reverter_1",  "style": "mean_reverter",     "max_pos": 4},
 ]
 
 
 async def main():
     config = load_config()
     bus = EventBus()
-    starting = config["trading"]["starting_balance"]
+    per_trader = config["trading"]["starting_balance"]  # $50 each
 
     print("=" * 70)
-    print("  SWARM CRYPTO TRADER — 10 Researchers + 5 Traders")
+    print("  TRADER COMPETITION — 5 Competitors x $50 Each")
     print("=" * 70)
     print(f"  Mode:       PAPER (simulated)")
-    print(f"  Balance:    ${starting:.2f}")
+    print(f"  Per Trader: ${per_trader:.2f}")
+    print(f"  Total Pool: ${per_trader * len(TRADER_POOL):.2f}")
     print(f"  Coins:      {len(config['trading']['pairs'])}")
     print(f"  Leverage:   {config['trading']['default_leverage']}x (max {config['trading']['max_leverage']}x)")
-    print(f"  Risk:       MAX — spread across 5 traders, 24 max positions")
     print()
 
-    # === Shared portfolio manager ===
-    portfolio_mgr = PortfolioManager(bus, config)
+    # === Competition Portfolio Manager ===
+    portfolio_mgr = PortfolioManager(bus, config, trader_configs=TRADER_POOL)
 
-    # === 5 Independent Trader Agents ===
+    # === 5 Competing Trader Agents ===
     traders = []
-    print("  Trader Agents:")
+    print("  Competitors:")
     for tc in TRADER_POOL:
-        capital = starting * tc["capital_pct"]
         trader = TraderAgent(
             trader_id=tc["id"],
             bus=bus,
             config=config,
             portfolio_mgr=portfolio_mgr,
             style=tc["style"],
-            capital=capital,
+            capital=per_trader,
             max_positions=tc["max_pos"],
         )
         traders.append(trader)
-        print(f"    {tc['id']:18s}  {tc['style']:18s}  ${capital:>6.2f}  max {tc['max_pos']} pos")
+        print(f"    {tc['id']:18s}  {tc['style']:18s}  ${per_trader:>6.2f}  max {tc['max_pos']} pos")
     print()
 
     # === Signal Router ===
     router = SignalRouter(bus, config, traders)
 
-    # === 10 Researcher Agents ===
-    print("  Researcher Agents:")
+    # === 10 Researcher Agents (shared advisors) ===
+    print("  Research Advisors:")
     market = MarketDataCollector(bus, config)
     print(f"    1.  Market Data        — Binance WS + CoinGecko fallback")
 
@@ -108,13 +107,11 @@ async def main():
     print(f"  Support: Portfolio Manager, Auditor, Evaluator, Compounder, Dashboard")
     print(f"  Total agents: {11 + len(traders) + 5}")
     print()
-    print("  All agents online. SWARM ACTIVE. LFG.\n")
+    print("  COMPETITION ACTIVE. May the best trader win.\n")
 
     # === Build task list ===
     tasks = [
-        # Data
         asyncio.create_task(market.run(), name="market_data"),
-        # Researchers
         asyncio.create_task(tech_fast.run(), name="technical_fast"),
         asyncio.create_task(tech_std.run(), name="technical_standard"),
         asyncio.create_task(tech_slow.run(), name="technical_slow"),
@@ -125,17 +122,13 @@ async def main():
         asyncio.create_task(order_flow.run(), name="order_flow"),
         asyncio.create_task(correlation.run(), name="correlation"),
         asyncio.create_task(microstructure.run(), name="microstructure"),
-        # Router
         asyncio.create_task(router.run(), name="signal_router"),
-        # Portfolio manager (handles execution + state)
         asyncio.create_task(portfolio_mgr.run(), name="portfolio_manager"),
-        # Support
         asyncio.create_task(auditor.run(), name="auditor"),
         asyncio.create_task(evaluator.run(), name="evaluator"),
         asyncio.create_task(compounder.run(), name="compounder"),
         asyncio.create_task(dash.run(), name="dashboard"),
     ]
-    # Traders
     for trader in traders:
         tasks.append(asyncio.create_task(trader.run(), name=f"trader_{trader.trader_id}"))
 
