@@ -203,10 +203,14 @@ class StrategyEngine:
         ))
 
     async def _deploy_idle_cash(self, payload: dict):
-        """When compounder detects idle cash, scan ALL coins and pick the best
-        one to deploy into immediately. Respects blacklist and learnings."""
+        """When compounder detects idle cash, deploy into MULTIPLE coins at once.
+        Ignores cooldowns — when cash exists, it MUST be deployed NOW."""
         now = time.time()
+        idle_cash = payload.get("idle_cash", 0)
+        if idle_cash < 0.10:
+            return
 
+        # Score ALL available coins — ignore cooldown for deployment
         candidates = []
         for symbol, sigs in self.signals.items():
             if symbol in self.held_symbols:
@@ -216,7 +220,8 @@ class StrategyEngine:
             if not self.latest_prices.get(symbol):
                 continue
 
-            active = {k: v for k, v in sigs.items() if now - v[2] < 120}
+            # Accept signals up to 5 min old for deployment (not just 120s)
+            active = {k: v for k, v in sigs.items() if now - v[2] < 300}
             if not active:
                 continue
 
@@ -231,34 +236,33 @@ class StrategyEngine:
 
             if total_weight > 0:
                 buy_score /= total_weight
-                # Apply probation penalty
                 if self._is_on_probation(symbol):
                     buy_score *= 0.6
-                # Apply combo penalty
                 buy_score -= self._get_combo_penalty(symbol)
-                if buy_score > 0.1:
+                if buy_score > 0.05:  # Very low bar for deployment
                     leverage = self._get_leverage(symbol)
                     candidates.append((symbol, buy_score, leverage))
 
+        # Fallback: ANY coin with price data that's not held or blocked
         if not candidates:
-            # Fallback: highest volatility coin not held and not blacklisted
-            for sym in self.volatility_data:
+            for sym in self.latest_prices:
                 if (sym not in self.held_symbols and
-                    sym in self.latest_prices and
                     not self._is_blocked(sym)):
                     lev = self._get_leverage(sym)
-                    candidates.append((sym, 0.4, lev))
-                    break
+                    candidates.append((sym, 0.3, lev))
+                    if len(candidates) >= 5:
+                        break
 
         if not candidates:
             return
 
+        # Sort by score and deploy into top N coins, splitting cash
         candidates.sort(key=lambda x: x[1], reverse=True)
-        best_symbol, best_score, best_leverage = candidates[0]
-
-        if best_score >= 0.15:
-            await self._emit_trade_signal(best_symbol, Side.BUY, max(best_score, 0.4), best_leverage)
-            self.last_trade_signal[best_symbol] = now
+        # Deploy into up to 5 coins at once to burn through all cash
+        deploy_count = min(len(candidates), 5)
+        for symbol, score, leverage in candidates[:deploy_count]:
+            await self._emit_trade_signal(symbol, Side.BUY, max(score, 0.3), leverage)
+            self.last_trade_signal[symbol] = now
 
     def _apply_adjustment(self, payload: dict):
         # Weight adjustments

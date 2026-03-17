@@ -1,0 +1,15 @@
+{
+  "coins": {},
+  "indicators": {},
+  "combos": {},
+  "blacklist": [],
+  "probation": [],
+  "leverage_overrides": {},
+  "exit_patterns": {
+    "liquidated": 0,
+    "stop_loss": 0,
+    "trailing_stop": 0,
+    "signal_sell": 0
+  },
+  "rules_learned": []
+}

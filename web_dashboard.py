@@ -31,6 +31,7 @@ def parse_logs():
     portfolio_snapshots = []
     signals = []
     latest_prices = {}
+    price_ticks = []  # all price updates for chart
 
     with open(LOG_FILE) as f:
         for line in f:
@@ -41,16 +42,151 @@ def parse_logs():
 
             t = entry.get("type")
             if t == "order_filled":
-                trades.append(entry["payload"] | {"timestamp": entry["timestamp"]})
+                trades.append({**entry["payload"], "timestamp": entry["timestamp"]})
             elif t == "portfolio_update":
-                portfolio_snapshots.append(entry["payload"] | {"timestamp": entry["timestamp"]})
+                portfolio_snapshots.append({**entry["payload"], "timestamp": entry["timestamp"]})
             elif t in ("technical_signal", "sentiment_signal", "trade_signal"):
-                signals.append(entry["payload"] | {"timestamp": entry["timestamp"], "signal_type": t})
+                signals.append({**entry["payload"], "timestamp": entry["timestamp"], "signal_type": t})
             elif t == "price_update":
                 p = entry["payload"]
                 latest_prices[p["symbol"]] = p["price"]
+                price_ticks.append({
+                    "symbol": p["symbol"],
+                    "price": p["price"],
+                    "timestamp": entry["timestamp"],
+                })
 
-    return trades, portfolio_snapshots, signals, latest_prices
+    return trades, portfolio_snapshots, signals, latest_prices, price_ticks
+
+
+def build_chart_series(trades, price_ticks, portfolio_snapshots, starting_balance):
+    """Build stacked area chart data: cash + per-position value over time."""
+    if not price_ticks:
+        return {"labels": [], "datasets": []}
+
+    # Figure out when each position was opened/closed
+    # positions_held: {symbol: {quantity, entry_price, open_time}}
+    positions_held = {}
+    trade_events = []
+    for t in trades:
+        ts = t.get("time", t.get("timestamp", 0))
+        side = t["side"].upper()
+        sym = t["symbol"]
+        qty = t["quantity"]
+        price = t["price"]
+        if side == "BUY":
+            positions_held[sym] = {"quantity": qty, "entry_price": price, "open_time": ts}
+        elif side == "SELL" and sym in positions_held:
+            del positions_held[sym]
+        trade_events.append({"timestamp": ts, "symbol": sym, "side": side})
+
+    # Collect all unique symbols ever held
+    held_symbols = set()
+    for t in trades:
+        if t["side"].upper() == "BUY":
+            held_symbols.add(t["symbol"])
+
+    if not held_symbols:
+        # No trades yet — just show cash as flat line
+        first_ts = price_ticks[0]["timestamp"]
+        last_ts = price_ticks[-1]["timestamp"]
+        return {
+            "labels": [first_ts * 1000, last_ts * 1000],
+            "datasets": [{
+                "label": "Cash",
+                "data": [starting_balance, starting_balance],
+                "color": "#334155",
+            }],
+        }
+
+    # Build price lookup: group price ticks by timestamp bucket
+    # Sample every ~60s to keep chart manageable
+    all_timestamps = sorted(set(int(pt["timestamp"]) for pt in price_ticks))
+    # Deduplicate to ~1 point per minute
+    sampled_ts = []
+    last_t = 0
+    for ts in all_timestamps:
+        if ts - last_t >= 30:
+            sampled_ts.append(ts)
+            last_t = ts
+    if not sampled_ts:
+        sampled_ts = all_timestamps[:1]
+
+    # Build running price map from ticks
+    price_map = {}  # symbol -> latest price at each point
+    tick_idx = 0
+    current_prices = {}
+
+    # Pre-sort ticks
+    sorted_ticks = sorted(price_ticks, key=lambda x: x["timestamp"])
+
+    # Build per-position value series and cash series
+    # Reconstruct portfolio state at each sampled timestamp
+    cash_series = []
+    position_series = {sym: [] for sym in held_symbols}
+
+    # Replay: track when buys/sells happen
+    trade_idx = 0
+    sorted_trades = sorted(trades, key=lambda t: t.get("time", t.get("timestamp", 0)))
+    active_positions = {}  # sym -> {quantity, entry_price}
+    current_cash = starting_balance
+    tick_ptr = 0
+
+    for ts in sampled_ts:
+        # Apply any trades that happened up to this timestamp
+        while trade_idx < len(sorted_trades):
+            t = sorted_trades[trade_idx]
+            t_ts = t.get("time", t.get("timestamp", 0))
+            if t_ts <= ts:
+                side = t["side"].upper()
+                sym = t["symbol"]
+                if side == "BUY":
+                    cost = t.get("cost", t["quantity"] * t["price"])
+                    current_cash -= cost
+                    active_positions[sym] = {"quantity": t["quantity"], "entry_price": t["price"]}
+                elif side == "SELL":
+                    if sym in active_positions:
+                        proceeds = t["quantity"] * t["price"]
+                        current_cash += proceeds
+                        del active_positions[sym]
+                trade_idx += 1
+            else:
+                break
+
+        # Update prices from ticks up to this timestamp
+        while tick_ptr < len(sorted_ticks) and sorted_ticks[tick_ptr]["timestamp"] <= ts:
+            tick = sorted_ticks[tick_ptr]
+            current_prices[tick["symbol"]] = tick["price"]
+            tick_ptr += 1
+
+        cash_series.append(round(max(current_cash, 0), 2))
+        for sym in held_symbols:
+            if sym in active_positions:
+                price = current_prices.get(sym, active_positions[sym]["entry_price"])
+                val = active_positions[sym]["quantity"] * price
+                position_series[sym].append(round(val, 2))
+            else:
+                position_series[sym].append(0)
+
+    # Build datasets
+    datasets = [{"label": "Cash", "data": cash_series, "color": "#334155"}]
+    sym_colors = {}
+    color_idx = 0
+    chart_colors = ['#3b82f6', '#8b5cf6', '#ec4899', '#f97316', '#22c55e',
+                    '#eab308', '#06b6d4', '#ef4444', '#10b981', '#6366f1']
+    for sym in sorted(held_symbols):
+        c = chart_colors[color_idx % len(chart_colors)]
+        color_idx += 1
+        datasets.append({
+            "label": sym.upper(),
+            "data": position_series[sym],
+            "color": c,
+        })
+
+    return {
+        "labels": [ts * 1000 for ts in sampled_ts],  # JS milliseconds
+        "datasets": datasets,
+    }
 
 
 async def fetch_live_prices(session):
@@ -67,7 +203,7 @@ async def fetch_live_prices(session):
 
 async def api_data(request):
     portfolio = load_portfolio()
-    trades, snapshots, signals, log_prices = parse_logs()
+    trades, snapshots, signals, log_prices, price_ticks = parse_logs()
 
     session = ClientSession()
     live = await fetch_live_prices(session)
@@ -149,7 +285,11 @@ async def api_data(request):
             "strength": s.get("strength", s.get("confidence", 0)),
         })
 
+    # Build chart series
+    chart_data = build_chart_series(trades, price_ticks, snapshots, starting)
+
     return web.json_response({
+        "chart": chart_data,
         "portfolio": {
             "total_value": round(total_value, 2),
             "cash": round(portfolio["cash"], 2),
@@ -168,9 +308,9 @@ async def api_data(request):
         "config": {
             "mode": CONFIG["trading"]["mode"],
             "max_positions": CONFIG["risk"]["max_positions"],
-            "max_drawdown_pct": CONFIG["risk"]["max_drawdown"] * 100,
-            "stop_loss_pct": CONFIG["risk"]["default_stop_loss_pct"] * 100,
-            "take_profit_pct": CONFIG["risk"]["default_take_profit_pct"] * 100,
+            "max_drawdown_pct": round(CONFIG["risk"]["max_drawdown"] * 100, 1),
+            "stop_loss_pct": round(CONFIG["risk"].get("default_stop_loss_pct", 0.025) * 100, 1),
+            "take_profit_pct": round(CONFIG["risk"].get("default_take_profit_pct", 0.05) * 100, 1),
         },
     })
 
@@ -185,6 +325,8 @@ HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Crypto Trader Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <style>
   :root {
     --bg: #0a0e17;
@@ -498,6 +640,19 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Portfolio Chart -->
+  <div class="grid-full">
+    <div class="card">
+      <div class="card-header">
+        Portfolio Value
+        <span class="tooltip" id="chart-range">--</span>
+      </div>
+      <div class="chart-container" style="height: 340px;">
+        <canvas id="portfolio-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
   <!-- Portfolio Allocation -->
   <div class="grid-full">
     <div class="card">
@@ -579,6 +734,111 @@ function fmtPrice(p) {
 
 function pnlClass(v) { return v > 0 ? 'positive' : v < 0 ? 'negative' : 'neutral'; }
 
+let portfolioChart = null;
+
+function renderChart(chartData) {
+  const ctx = document.getElementById('portfolio-chart');
+  if (!ctx) return;
+
+  const labels = chartData.labels;
+  const datasets = chartData.datasets.map((ds, i) => {
+    const color = ds.color;
+    // Parse hex to rgb for alpha
+    const r = parseInt(color.slice(1,3), 16);
+    const g = parseInt(color.slice(3,5), 16);
+    const b = parseInt(color.slice(5,7), 16);
+    return {
+      label: ds.label,
+      data: ds.data.map((v, j) => ({x: labels[j], y: v})),
+      backgroundColor: `rgba(${r},${g},${b},0.45)`,
+      borderColor: color,
+      borderWidth: 1.5,
+      fill: i === 0 ? 'origin' : '-1',
+      pointRadius: 0,
+      pointHitRadius: 8,
+      tension: 0.3,
+    };
+  });
+
+  if (portfolioChart) {
+    portfolioChart.data.datasets = datasets;
+    portfolioChart.update('none');
+    return;
+  }
+
+  portfolioChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {
+        mode: 'index',
+        intersect: false,
+      },
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            color: '#94a3b8',
+            font: { family: "'SF Mono', monospace", size: 11 },
+            usePointStyle: true,
+            pointStyle: 'circle',
+            padding: 16,
+          },
+        },
+        tooltip: {
+          backgroundColor: '#1e293b',
+          titleColor: '#e2e8f0',
+          bodyColor: '#e2e8f0',
+          borderColor: '#334155',
+          borderWidth: 1,
+          padding: 12,
+          bodyFont: { family: "'SF Mono', monospace", size: 12 },
+          titleFont: { family: "'SF Mono', monospace", size: 12 },
+          callbacks: {
+            title: function(items) {
+              if (!items.length) return '';
+              return new Date(items[0].parsed.x).toLocaleString();
+            },
+            label: function(item) {
+              return `  ${item.dataset.label}: $${item.parsed.y.toFixed(2)}`;
+            },
+            afterBody: function(items) {
+              const total = items.reduce((sum, it) => sum + it.parsed.y, 0);
+              return `\n  Total: $${total.toFixed(2)}`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: {
+            tooltipFormat: 'MMM d, HH:mm',
+            displayFormats: {
+              minute: 'HH:mm',
+              hour: 'HH:mm',
+              day: 'MMM d',
+            },
+          },
+          grid: { color: '#1e293b', drawBorder: false },
+          ticks: { color: '#64748b', font: { family: "'SF Mono', monospace", size: 10 }, maxTicksLimit: 8 },
+        },
+        y: {
+          stacked: true,
+          grid: { color: '#1e293b', drawBorder: false },
+          ticks: {
+            color: '#64748b',
+            font: { family: "'SF Mono', monospace", size: 10 },
+            callback: function(v) { return '$' + v.toFixed(0); },
+          },
+        },
+      },
+    },
+  });
+}
+
 async function refresh() {
   try {
     const res = await fetch('/api/data');
@@ -591,6 +851,14 @@ async function refresh() {
 
 function render(d) {
   const p = d.portfolio;
+
+  // Portfolio chart
+  if (d.chart && d.chart.labels.length > 1) {
+    renderChart(d.chart);
+    const firstDate = new Date(d.chart.labels[0]).toLocaleTimeString();
+    const lastDate = new Date(d.chart.labels[d.chart.labels.length - 1]).toLocaleTimeString();
+    document.getElementById('chart-range').textContent = `${firstDate} — ${lastDate}`;
+  }
 
   // KPIs
   document.getElementById('kpi-value').textContent = '$' + fmt(p.total_value);
