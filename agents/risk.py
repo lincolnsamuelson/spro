@@ -4,9 +4,12 @@ from models import Event, EventType, Side, Portfolio
 from event_bus import EventBus
 
 
+TARGET_POSITIONS = 20  # Spread capital across ~20 coins
+
+
 class RiskManager:
     """Aggressive risk manager. Splits cash across multiple simultaneous trades.
-    Tracks pending allocations so rapid-fire signals all get funded."""
+    Caps each position to total_value / TARGET_POSITIONS so capital spreads wide."""
 
     def __init__(self, bus: EventBus, config: dict):
         self.bus = bus
@@ -96,8 +99,12 @@ class RiskManager:
             if available < 0.10:
                 return
 
-            # Use all available cash — the strategy already picked the best coins
-            position_margin = available
+            # Cap each position margin so capital spreads across many coins
+            num_existing = len(self.portfolio.positions) + len(self.pending_allocations)
+            slots_remaining = max(TARGET_POSITIONS - num_existing, 1)
+            max_per_position = self.portfolio.total_value / TARGET_POSITIONS
+            # Split remaining cash evenly across open slots, but never exceed the per-position cap
+            position_margin = min(available / slots_remaining, max_per_position, available)
             if position_margin < 0.10:
                 return
 
