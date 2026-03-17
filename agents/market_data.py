@@ -1,3 +1,4 @@
+from __future__ import annotations
 import asyncio
 import json
 import time
@@ -41,7 +42,7 @@ class MarketDataCollector:
     def __init__(self, bus: EventBus, config: dict):
         self.bus = bus
         self.config = config
-        self.queue = bus.subscribe("market_data")
+        self.queue = bus.subscribe("market_data", topics={EventType.SHUTDOWN})
         self.candle_interval = config["market_data"]["candle_interval_seconds"]
         self.pairs = config["trading"]["pairs"]
         self.prices: dict[str, float] = {}

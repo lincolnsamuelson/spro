@@ -1,9 +1,9 @@
+from __future__ import annotations
 import asyncio
 import json
 import os
 import time
-from dataclasses import asdict
-from models import Event, EventType
+from models import Event, EventType, RESEARCHER_SIGNAL_TYPES
 from event_bus import EventBus
 
 
@@ -11,11 +11,13 @@ class Auditor:
     def __init__(self, bus: EventBus, config: dict):
         self.bus = bus
         self.config = config
-        self.queue = bus.subscribe("auditor")
+        self.queue = bus.subscribe("auditor", topics={
+            EventType.ORDER_FILLED, EventType.PORTFOLIO_UPDATE,
+            EventType.TRADE_SIGNAL, EventType.SHUTDOWN,
+        } | RESEARCHER_SIGNAL_TYPES)
         self.log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
         os.makedirs(self.log_dir, exist_ok=True)
         self.log_path = os.path.join(self.log_dir, "trades.jsonl")
-        # Stats
         self.total_trades = 0
         self.winning_trades = 0
         self.total_pnl = 0.0
@@ -23,7 +25,7 @@ class Auditor:
         self.peak_value = 0.0
         self.events_processed = 0
         self.recent_trades: list[dict] = []
-        self.recent_signals: dict[str, dict] = {}  # symbol -> {indicator: signal_data}
+        self.recent_signals: dict[str, dict] = {}
 
     async def run(self):
         while True:
@@ -37,7 +39,7 @@ class Auditor:
                 self._on_trade(event.payload)
             elif event.type == EventType.PORTFOLIO_UPDATE:
                 self._on_portfolio(event.payload)
-            elif event.type in (EventType.TECHNICAL_SIGNAL, EventType.SENTIMENT_SIGNAL):
+            elif event.type in RESEARCHER_SIGNAL_TYPES:
                 self._on_signal(event.payload)
 
     def _log_event(self, event: Event):

@@ -7,75 +7,137 @@ from agents.technical import TechnicalAnalyst
 from agents.sentiment import SentimentAnalyst
 from agents.momentum import MomentumDetector
 from agents.volatility import VolatilityScanner
-from agents.strategy import StrategyEngine
-from agents.risk import RiskManager
-from agents.executor import Executor
+from agents.order_flow import OrderFlowAnalyst
+from agents.correlation import CorrelationAnalyst
+from agents.microstructure import MicrostructureAnalyst
+from agents.signal_router import SignalRouter
+from agents.trader_agent import TraderAgent
+from agents.portfolio_manager import PortfolioManager
 from agents.auditor import Auditor
 from agents.evaluator import Evaluator
 from agents.compounder import Compounder
 from dashboard import Dashboard
 
 
+# Trader pool: 5 independent traders with different strategies
+TRADER_POOL = [
+    {"id": "momentum_1",  "style": "momentum_chaser", "capital_pct": 0.25, "max_pos": 5},
+    {"id": "momentum_2",  "style": "momentum_chaser", "capital_pct": 0.20, "max_pos": 5},
+    {"id": "breakout_1",  "style": "breakout_hunter",  "capital_pct": 0.20, "max_pos": 4},
+    {"id": "scalper_1",   "style": "scalper",           "capital_pct": 0.20, "max_pos": 6},
+    {"id": "reverter_1",  "style": "mean_reverter",     "capital_pct": 0.15, "max_pos": 4},
+]
+
+
 async def main():
     config = load_config()
     bus = EventBus()
+    starting = config["trading"]["starting_balance"]
 
-    print("=" * 60)
-    print("  AGGRESSIVE LEVERAGED CRYPTO TRADER")
-    print("=" * 60)
+    print("=" * 70)
+    print("  SWARM CRYPTO TRADER — 10 Researchers + 5 Traders")
+    print("=" * 70)
     print(f"  Mode:       PAPER (simulated)")
-    print(f"  Balance:    ${config['trading']['starting_balance']:.2f}")
+    print(f"  Balance:    ${starting:.2f}")
     print(f"  Coins:      {len(config['trading']['pairs'])}")
     print(f"  Leverage:   {config['trading']['default_leverage']}x (max {config['trading']['max_leverage']}x)")
-    print(f"  Risk:       MAX — 25% per trade, 50% drawdown halt")
-    print(f"  Trailing:   {config['risk']['trailing_stop_pct']*100}% trailing stop")
-    print(f"  Positions:  UNLIMITED")
+    print(f"  Risk:       MAX — spread across 5 traders, 24 max positions")
     print()
-    print("  Agent Team:")
-    print("    1. Market Data Collector    — 57 coins, 15s polling")
-    print("    2. Technical Analyst        — RSI, MACD, BB, EMA")
-    print("    3. Sentiment Analyst        — Fear/Greed Index")
-    print("    4. Momentum Detector        — Breakouts, spikes, acceleration")
-    print("    5. Volatility Scanner       — Ranks coins, sets leverage")
-    print("    6. Strategy Engine          — Weighted signals, adaptive")
-    print("    7. Risk Manager             — Aggressive sizing, leverage")
-    print("    8. Executor                 — Leveraged paper trades + trailing stops")
-    print("    9. Compounder               — Zero idle capital, streak scaling")
-    print("   10. Evaluator                — Trade grading, strategy refinement")
-    print("   11. Auditor                  — Full event logging")
-    print("   12. Dashboard                — Live terminal UI")
-    print()
-    print("  Initializing 12 agents...")
 
+    # === Shared portfolio manager ===
+    portfolio_mgr = PortfolioManager(bus, config)
+
+    # === 5 Independent Trader Agents ===
+    traders = []
+    print("  Trader Agents:")
+    for tc in TRADER_POOL:
+        capital = starting * tc["capital_pct"]
+        trader = TraderAgent(
+            trader_id=tc["id"],
+            bus=bus,
+            config=config,
+            portfolio_mgr=portfolio_mgr,
+            style=tc["style"],
+            capital=capital,
+            max_positions=tc["max_pos"],
+        )
+        traders.append(trader)
+        print(f"    {tc['id']:18s}  {tc['style']:18s}  ${capital:>6.2f}  max {tc['max_pos']} pos")
+    print()
+
+    # === Signal Router ===
+    router = SignalRouter(bus, config, traders)
+
+    # === 10 Researcher Agents ===
+    print("  Researcher Agents:")
     market = MarketDataCollector(bus, config)
-    technical = TechnicalAnalyst(bus, config)
+    print(f"    1.  Market Data        — Binance WS + CoinGecko fallback")
+
+    tech_fast = TechnicalAnalyst(bus, config, timeframe="fast")
+    tech_std = TechnicalAnalyst(bus, config, timeframe="standard")
+    tech_slow = TechnicalAnalyst(bus, config, timeframe="slow")
+    print(f"    2-4. Technical x3      — fast/standard/slow timeframes")
+
     sentiment = SentimentAnalyst(bus, config)
-    momentum = MomentumDetector(bus, config)
+    print(f"    5.  Sentiment          — Fear & Greed Index")
+
+    mom_high = MomentumDetector(bus, config, sensitivity="high")
+    mom_std = MomentumDetector(bus, config, sensitivity="standard")
+    print(f"    6-7. Momentum x2       — high/standard sensitivity")
+
     volatility = VolatilityScanner(bus, config)
-    strategy = StrategyEngine(bus, config)
-    risk = RiskManager(bus, config)
-    executor = Executor(bus, config)
+    print(f"    8.  Volatility         — Ranks coins, sets leverage")
+
+    order_flow = OrderFlowAnalyst(bus, config)
+    print(f"    9.  Order Flow         — Buy/sell pressure detection")
+
+    correlation = CorrelationAnalyst(bus, config)
+    print(f"   10.  Correlation        — BTC/alt divergence signals")
+
+    microstructure = MicrostructureAnalyst(bus, config)
+    print(f"   11.  Microstructure     — Round numbers, tick spikes")
+    print()
+
+    # === Support Agents ===
     auditor = Auditor(bus, config)
     evaluator = Evaluator(bus, config)
     compounder = Compounder(bus, config)
-    dash = Dashboard(executor, auditor, evaluator, compounder, volatility, config)
+    dash = Dashboard(portfolio_mgr, auditor, evaluator, compounder,
+                     volatility, traders, config)
 
-    print("  All 12 agents online. LFG.\n")
+    print(f"  Support: Portfolio Manager, Auditor, Evaluator, Compounder, Dashboard")
+    print(f"  Total agents: {11 + len(traders) + 5}")
+    print()
+    print("  All agents online. SWARM ACTIVE. LFG.\n")
 
+    # === Build task list ===
     tasks = [
+        # Data
         asyncio.create_task(market.run(), name="market_data"),
-        asyncio.create_task(technical.run(), name="technical"),
+        # Researchers
+        asyncio.create_task(tech_fast.run(), name="technical_fast"),
+        asyncio.create_task(tech_std.run(), name="technical_standard"),
+        asyncio.create_task(tech_slow.run(), name="technical_slow"),
         asyncio.create_task(sentiment.run(), name="sentiment"),
-        asyncio.create_task(momentum.run(), name="momentum"),
+        asyncio.create_task(mom_high.run(), name="momentum_high"),
+        asyncio.create_task(mom_std.run(), name="momentum_standard"),
         asyncio.create_task(volatility.run(), name="volatility"),
-        asyncio.create_task(strategy.run(), name="strategy"),
-        asyncio.create_task(risk.run(), name="risk"),
-        asyncio.create_task(executor.run(), name="executor"),
+        asyncio.create_task(order_flow.run(), name="order_flow"),
+        asyncio.create_task(correlation.run(), name="correlation"),
+        asyncio.create_task(microstructure.run(), name="microstructure"),
+        # Router
+        asyncio.create_task(router.run(), name="signal_router"),
+        # Portfolio manager (handles execution + state)
+        asyncio.create_task(portfolio_mgr.run(), name="portfolio_manager"),
+        # Support
         asyncio.create_task(auditor.run(), name="auditor"),
         asyncio.create_task(evaluator.run(), name="evaluator"),
         asyncio.create_task(compounder.run(), name="compounder"),
         asyncio.create_task(dash.run(), name="dashboard"),
     ]
+    # Traders
+    for trader in traders:
+        tasks.append(asyncio.create_task(trader.run(), name=f"trader_{trader.trader_id}"))
 
     loop = asyncio.get_event_loop()
 

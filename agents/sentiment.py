@@ -1,3 +1,4 @@
+from __future__ import annotations
 import asyncio
 import aiohttp
 from models import Event, EventType, Side
@@ -8,7 +9,7 @@ class SentimentAnalyst:
     def __init__(self, bus: EventBus, config: dict):
         self.bus = bus
         self.config = config
-        self.queue = bus.subscribe("sentiment")
+        self.queue = bus.subscribe("sentiment", topics={EventType.SHUTDOWN})
         self.fear_greed_value: int | None = None
 
     async def run(self):
@@ -34,7 +35,6 @@ class SentimentAnalyst:
                     value = int(data["data"][0]["value"])
                     self.fear_greed_value = value
 
-                    # Contrarian: extreme fear = buy signal, extreme greed = sell signal
                     if value < 25:
                         direction = Side.BUY
                         strength = (25 - value) / 25
@@ -50,7 +50,7 @@ class SentimentAnalyst:
                             type=EventType.SENTIMENT_SIGNAL,
                             payload={
                                 "symbol": pair,
-                                "indicator": "fear_greed",
+                                "indicator": "sentiment",
                                 "direction": direction.value,
                                 "strength": min(strength, 1.0),
                                 "value": value,

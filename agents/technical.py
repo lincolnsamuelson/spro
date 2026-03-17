@@ -1,17 +1,37 @@
+from __future__ import annotations
 import asyncio
 from collections import defaultdict, deque
 from models import Event, EventType, Signal, Side
 from event_bus import EventBus
 import indicators
 
+# Timeframe presets: fast catches signals 2x sooner, slow catches longer trends
+TIMEFRAME_PARAMS = {
+    "fast": {"rsi_period": 7, "macd_fast": 6, "macd_slow": 13, "macd_signal": 5,
+             "bb_period": 10, "bb_std": 2, "ema_fast": 5, "ema_slow": 12},
+    "standard": None,  # Use config defaults
+    "slow": {"rsi_period": 21, "macd_fast": 19, "macd_slow": 39, "macd_signal": 14,
+             "bb_period": 30, "bb_std": 2.5, "ema_fast": 13, "ema_slow": 34},
+}
+
 
 class TechnicalAnalyst:
-    def __init__(self, bus: EventBus, config: dict):
+    def __init__(self, bus: EventBus, config: dict, timeframe: str = "standard"):
         self.bus = bus
         self.config = config
-        self.queue = bus.subscribe("technical")
+        self.timeframe = timeframe
+        self.agent_name = f"technical_{timeframe}"
+        self.queue = bus.subscribe(self.agent_name, topics={
+            EventType.CANDLE, EventType.SHUTDOWN,
+        })
         self.closes: dict[str, deque] = defaultdict(lambda: deque(maxlen=200))
-        self.ind_cfg = config["indicators"]
+
+        # Use timeframe-specific params or config defaults
+        params = TIMEFRAME_PARAMS.get(timeframe)
+        if params:
+            self.ind_cfg = params
+        else:
+            self.ind_cfg = config["indicators"]
 
     async def run(self):
         while True:
@@ -52,7 +72,6 @@ class TechnicalAnalyst:
         if result is None:
             return
         _, _, histogram = result
-        # Check for histogram crossing zero by looking at recent closes
         if len(closes) < self.ind_cfg["macd_slow"] + self.ind_cfg["macd_signal"] + 1:
             return
         prev_result = indicators.macd(
@@ -97,19 +116,14 @@ class TechnicalAnalyst:
             await self._emit(symbol, "ema_crossover", Side.SELL, 0.7)
 
     async def _emit(self, symbol: str, indicator: str, direction: Side, strength: float):
-        signal = Signal(
-            symbol=symbol,
-            indicator=indicator,
-            direction=direction,
-            strength=strength,
-        )
         await self.bus.publish(Event(
             type=EventType.TECHNICAL_SIGNAL,
             payload={
-                "symbol": signal.symbol,
-                "indicator": signal.indicator,
-                "direction": signal.direction.value,
-                "strength": signal.strength,
+                "symbol": symbol,
+                "indicator": indicator,
+                "direction": direction.value,
+                "strength": strength,
+                "timeframe": self.timeframe,
             },
-            source="technical",
+            source=self.agent_name,
         ))

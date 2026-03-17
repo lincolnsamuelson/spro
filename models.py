@@ -1,3 +1,4 @@
+from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Dict, Any, List
@@ -11,6 +12,9 @@ class EventType(Enum):
     SENTIMENT_SIGNAL = "sentiment_signal"
     MOMENTUM_SIGNAL = "momentum_signal"
     VOLATILITY_RANKING = "volatility_ranking"
+    ORDER_FLOW_SIGNAL = "order_flow_signal"
+    CORRELATION_SIGNAL = "correlation_signal"
+    MICROSTRUCTURE_SIGNAL = "microstructure_signal"
     TRADE_SIGNAL = "trade_signal"
     ORDER_REQUEST = "order_request"
     ORDER_FILLED = "order_filled"
@@ -20,6 +24,18 @@ class EventType(Enum):
     COMPOUND_TRIGGER = "compound_trigger"
     HEARTBEAT = "heartbeat"
     SHUTDOWN = "shutdown"
+
+
+# All signal types that researchers emit
+RESEARCHER_SIGNAL_TYPES = {
+    EventType.TECHNICAL_SIGNAL,
+    EventType.SENTIMENT_SIGNAL,
+    EventType.MOMENTUM_SIGNAL,
+    EventType.VOLATILITY_RANKING,
+    EventType.ORDER_FLOW_SIGNAL,
+    EventType.CORRELATION_SIGNAL,
+    EventType.MICROSTRUCTURE_SIGNAL,
+}
 
 
 @dataclass
@@ -64,6 +80,7 @@ class Order:
     confidence: float
     stop_loss: float
     leverage: int = 1
+    trader_id: str = ""
     timestamp: float = field(default_factory=time.time)
 
 
@@ -78,7 +95,8 @@ class Position:
     trailing_stop: float
     highest_price: float
     unrealized_pnl: float = 0.0
-    margin: float = 0.0  # actual capital locked
+    margin: float = 0.0
+    trader_id: str = ""
 
 
 @dataclass

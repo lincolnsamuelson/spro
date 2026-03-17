@@ -4,12 +4,14 @@ import os
 
 
 class Dashboard:
-    def __init__(self, executor, auditor, evaluator, compounder, volatility, config: dict):
-        self.executor = executor
+    def __init__(self, portfolio_mgr, auditor, evaluator, compounder,
+                 volatility, traders, config: dict):
+        self.portfolio_mgr = portfolio_mgr
         self.auditor = auditor
         self.evaluator = evaluator
         self.compounder = compounder
         self.volatility = volatility
+        self.traders = traders  # list of TraderAgent instances
         self.refresh = config["dashboard"]["refresh_interval_seconds"]
 
     async def run(self):
@@ -22,23 +24,23 @@ class Dashboard:
 
     def _render(self):
         os.system("clear" if os.name != "nt" else "cls")
-        port = self.executor.portfolio
+        port = self.portfolio_mgr.portfolio
         summary = self.auditor.get_summary()
         eval_summary = self.evaluator.get_summary()
-        prices = self.executor.latest_prices
-        starting = self.executor.config["trading"]["starting_balance"]
+        prices = self.portfolio_mgr.latest_prices
+        starting = self.portfolio_mgr.config["trading"]["starting_balance"]
         pnl_pct = ((port.total_value - starting) / starting * 100) if starting > 0 else 0
 
         lines = []
-        w = 95
+        w = 100
 
-        # Header
         lines.append("=" * w)
         lines.append(
-            f"  AGGRESSIVE LEVERAGED TRADER   |   "
-            f"Equity: ${port.total_value:.2f}   |   "
-            f"Cash: ${port.cash:.2f}   |   "
-            f"P&L: {pnl_pct:+.1f}%   |   "
+            f"  SWARM TRADER  |  "
+            f"10 Researchers -> 5 Traders  |  "
+            f"Equity: ${port.total_value:.2f}  |  "
+            f"Cash: ${port.cash:.2f}  |  "
+            f"P&L: {pnl_pct:+.1f}%  |  "
             f"Realized: ${port.realized_pnl:+.2f}"
         )
         win_rate = (port.total_wins / (port.total_wins + port.total_losses) * 100
@@ -53,51 +55,58 @@ class Dashboard:
         )
         lines.append("=" * w)
 
-        # Hot coins from volatility scanner
+        # Trader agents status
+        lines.append("  TRADER AGENTS")
+        for t in self.traders:
+            pos_count = len(t.my_positions)
+            pending = len(t.pending_symbols)
+            lines.append(
+                f"    {t.trader_id:25s}  style:{t.style:18s}  "
+                f"pos:{pos_count}/{t.max_positions}  "
+                f"pending:{pending}  "
+                f"signals:{t.signals_received:>5d}  "
+                f"trades:{t.trades_sent:>3d}  "
+                f"cooldown:{t.cooldown}s  "
+                f"thresh:{t.threshold:.2f}"
+            )
+        lines.append("-" * w)
+
+        # Hot coins
         hot = self.volatility.hot_coins[:8]
         if hot:
             hot_parts = []
             for sym in hot:
                 score = self.volatility.volatility_scores.get(sym, 0)
-                p = prices.get(sym, 0)
-                if p > 1000:
-                    hot_parts.append(f"{sym[:6].upper()}(v:{score:.1f})")
-                else:
-                    hot_parts.append(f"{sym[:6].upper()}(v:{score:.1f})")
+                hot_parts.append(f"{sym[:6].upper()}(v:{score:.1f})")
             lines.append(f"  HOT COINS  {' | '.join(hot_parts)}")
         else:
             lines.append("  HOT COINS  (scanning...)")
         lines.append("-" * w)
 
-        # Open positions with leverage and equity
+        # Open positions
         lines.append("  OPEN POSITIONS")
         total_margin = 0
         total_notional = 0
         total_unrealized = 0
         if port.positions:
             for sym, pos in port.positions.items():
-                current = prices.get(sym, pos.entry_price)
                 equity = pos.margin + pos.unrealized_pnl
                 notional = pos.margin * pos.leverage
                 total_margin += pos.margin
                 total_notional += notional
                 total_unrealized += pos.unrealized_pnl
                 pnl_pct_pos = (pos.unrealized_pnl / pos.margin * 100) if pos.margin > 0 else 0
+                owner = pos.trader_id[:12] if pos.trader_id else "?"
                 lines.append(
                     f"    {sym[:14].upper():16s} "
                     f"{pos.leverage:2d}x  "
-                    f"Margin:${pos.margin:>7.2f}  "
-                    f"Notional:${notional:>9.2f}  "
-                    f"Equity:${equity:>7.2f}  "
-                    f"P&L:${pos.unrealized_pnl:>+7.2f}({pnl_pct_pos:>+5.1f}%)"
+                    f"M:${pos.margin:>6.2f}  "
+                    f"N:${notional:>8.2f}  "
+                    f"Eq:${equity:>6.2f}  "
+                    f"P&L:${pos.unrealized_pnl:>+6.2f}({pnl_pct_pos:>+5.1f}%)  "
+                    f"[{owner}]"
                 )
-                lines.append(
-                    f"    {'':16s} "
-                    f"     entry:${pos.entry_price:<10.4f} "
-                    f"trail:${pos.trailing_stop:<10.4f} "
-                    f"high:${pos.highest_price:<10.4f}"
-                )
-            lines.append(f"    {'─' * 80}")
+            lines.append(f"    {'─' * 85}")
             deployed_pct = (total_margin / port.total_value * 100) if port.total_value > 0 else 0
             lines.append(
                 f"    TOTALS  Margin:${total_margin:>7.2f}  "
@@ -116,20 +125,18 @@ class Dashboard:
             f"Efficiency:{eval_summary['avg_efficiency']}%  "
             f"Thresh adj:{eval_summary['threshold_adjustment']:+.3f}"
         )
+        # Trader performance
+        trader_perf = eval_summary.get("trader_performance", {})
+        if trader_perf:
+            tp_parts = []
+            for tid, tp in trader_perf.items():
+                tp_parts.append(f"{tid[:10]}:{tp['win_rate']:.0f}%/${tp['pnl']:+.2f}")
+            lines.append(f"    Traders: {' | '.join(tp_parts)}")
         if eval_summary["indicator_performance"]:
             parts = []
             for ind, perf in eval_summary["indicator_performance"].items():
                 parts.append(f"{ind[:5]}:{perf['win_rate']:.0f}%/{perf['trades']}t")
             lines.append(f"    {' | '.join(parts)}")
-        if eval_summary["missed_opportunities"]:
-            missed = eval_summary["missed_opportunities"][:3]
-            missed_parts = [f"{m['symbol'][:8].upper()}({m['move_pct']:.1f}%)" for m in missed]
-            lines.append(f"    Missed: {', '.join(missed_parts)}")
-        if eval_summary["top_coins"]:
-            top = eval_summary["top_coins"][:5]
-            top_parts = [f"{c['symbol'][:8].upper()}:${c['pnl']:+.2f}" for c in top]
-            lines.append(f"    Best coins: {' | '.join(top_parts)}")
-        # Learnings
         blacklist = eval_summary.get("blacklist", [])
         probation = eval_summary.get("probation", [])
         if blacklist:
@@ -138,39 +145,7 @@ class Dashboard:
             lines.append(f"    PROBATION:   {', '.join(s[:8].upper() for s in probation[:8])}")
         recent_rules = eval_summary.get("recent_rules", [])
         if recent_rules:
-            lines.append(f"    Last rule: {recent_rules[-1][:75]}")
-        exits = eval_summary.get("exit_patterns", {})
-        if any(exits.values()):
-            lines.append(
-                f"    Exits: trail:{exits.get('trailing_stop',0)} "
-                f"stop:{exits.get('stop_loss',0)} "
-                f"liq:{exits.get('liquidated',0)} "
-                f"signal:{exits.get('signal_sell',0)} "
-                f"| Rules:{eval_summary.get('rules_count',0)}"
-            )
-        lines.append("-" * w)
-
-        # Active signals (compact)
-        lines.append("  SIGNALS")
-        signal_items = list(summary.get("recent_signals", {}).items())
-        shown = 0
-        for sym, indicators in signal_items:
-            if not indicators:
-                continue
-            parts = []
-            for ind, data in indicators.items():
-                d = "B" if data.get("direction") == "buy" else "S"
-                s = data.get("strength", 0)
-                parts.append(f"{ind[:4]}:{d}{s:.1f}")
-            lines.append(f"    {sym[:12].upper():14s} {' | '.join(parts)}")
-            shown += 1
-            if shown >= 6:
-                remaining = len(signal_items) - shown
-                if remaining > 0:
-                    lines.append(f"    ... {remaining} more")
-                break
-        if shown == 0:
-            lines.append("    (warming up...)")
+            lines.append(f"    Last rule: {recent_rules[-1][:80]}")
         lines.append("-" * w)
 
         # Recent trades
@@ -184,17 +159,17 @@ class Dashboard:
             pnl = t.get("pnl")
             pnl_str = f"  P&L:${pnl:+.2f}" if pnl is not None else ""
             margin = t.get("margin") or t.get("margin_returned")
-            margin_str = f"  margin:${margin:.2f}" if margin else ""
+            margin_str = f"  m:${margin:.2f}" if margin else ""
             reason = t.get("reason", "")
             reason_str = f" [{reason}]" if reason else ""
+            trader = t.get("trader_id", "")[:10]
             lines.append(
-                f"    {ts}  {side:4s} {sym:12s} {lev:2d}x{margin_str}{pnl_str}{reason_str}"
+                f"    {ts}  {side:4s} {sym:12s} {lev:2d}x{margin_str}{pnl_str}{reason_str}  [{trader}]"
             )
         if not trades:
             lines.append("    (no trades yet)")
         lines.append("-" * w)
 
-        # Stats
         lines.append(
             f"  Trades:{summary['total_trades']}  "
             f"Win:{summary['win_rate']}%  "
