@@ -648,14 +648,16 @@ class TraderAgent:
         if available < 0.05:
             return
 
-        current_count = len(self.my_positions) + len(self.pending_symbols)
+        # Use actual positions as source of truth, not the event-driven set
+        actual_positions = set(my_state.positions.keys())
+        current_count = len(actual_positions) + len(self.pending_symbols)
         slots = self.max_positions - current_count
         if slots <= 0:
             return
 
         candidates = []
         for symbol, sigs in self.signals.items():
-            if symbol in self.my_positions or symbol in self.pending_symbols:
+            if symbol in actual_positions or symbol in self.pending_symbols:
                 continue
             if self._is_blocked(symbol):
                 continue
@@ -686,7 +688,7 @@ class TraderAgent:
         # STEAL from top performers — copy what winners are doing
         stolen = self._steal_winning_coins()
         for sc in stolen[:5]:
-            if (sc not in self.my_positions and
+            if (sc not in actual_positions and
                     sc not in self.pending_symbols and
                     not self._is_blocked(sc) and
                     self.latest_prices.get(sc)):
@@ -697,7 +699,7 @@ class TraderAgent:
 
         # Boost hot coins from the coach
         for hc in self.hot_coins:
-            if (hc not in self.my_positions and
+            if (hc not in actual_positions and
                     hc not in self.pending_symbols and
                     not self._is_blocked(hc) and
                     self.latest_prices.get(hc)):
@@ -712,7 +714,7 @@ class TraderAgent:
             # Sort by affinity so each trader picks different fallback coins
             all_syms.sort(key=lambda s: self._coin_affinity(s), reverse=True)
             for sym in all_syms:
-                if (sym not in self.my_positions and
+                if (sym not in actual_positions and
                         sym not in self.pending_symbols and
                         not self._is_blocked(sym)):
                     intel = self._get_rival_intel(sym)
