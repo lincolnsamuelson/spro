@@ -7,13 +7,21 @@ from models import Event, EventType, Side, Position, Portfolio
 from event_bus import EventBus
 
 
-# Competitor colors for dashboard
+# Competitor identities
 TRADER_COLORS = {
-    "momentum_1": "#3b82f6",   # blue
-    "momentum_2": "#8b5cf6",   # purple
-    "breakout_1": "#f97316",   # orange
-    "scalper_1":  "#22c55e",   # green
-    "reverter_1": "#ec4899",   # pink
+    "blitz":    "#3b82f6",   # blue
+    "phantom":  "#8b5cf6",   # purple
+    "maverick": "#f97316",   # orange
+    "viper":    "#22c55e",   # green
+    "ghost":    "#ec4899",   # pink
+}
+
+TRADER_NAMES = {
+    "blitz":    "BLITZ",
+    "phantom":  "PHANTOM",
+    "maverick": "MAVERICK",
+    "viper":    "VIPER",
+    "ghost":    "GHOST",
 }
 
 
@@ -21,6 +29,7 @@ class TraderState:
     """Per-trader portfolio state for the competition."""
     def __init__(self, trader_id: str, cash: float, style: str = ""):
         self.trader_id = trader_id
+        self.name = TRADER_NAMES.get(trader_id, trader_id.upper())
         self.style = style
         self.cash = cash
         self.starting_cash = cash
@@ -406,6 +415,7 @@ class PortfolioManager:
             win_rate = (t.total_wins / total_trades * 100) if total_trades > 0 else 0
             board.append({
                 "trader_id": tid,
+                "name": t.name,
                 "style": t.style,
                 "color": t.color,
                 "equity": round(t.total_value, 2),
@@ -432,6 +442,7 @@ class PortfolioManager:
                 continue
             datasets.append({
                 "trader_id": tid,
+                "name": t.name,
                 "style": t.style,
                 "color": t.color,
                 "points": [{"x": ts, "y": val} for ts, val in t.equity_history],

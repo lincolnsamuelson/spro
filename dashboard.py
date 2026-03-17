@@ -53,7 +53,7 @@ class Dashboard:
             medal = {1: "1st", 2: "2nd", 3: "3rd"}.get(b["rank"], f"{b['rank']}th")
             lines.append(
                 f"  {medal:<6}"
-                f"{b['trader_id']:<20}"
+                f"{b.get('name', b['trader_id']):<20}"
                 f"{b['style']:<20}"
                 f"${b['equity']:>8.2f}"
                 f"  {pnl_sign}${abs(b['pnl']):>7.2f}"

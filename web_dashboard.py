@@ -18,13 +18,21 @@ LEARNINGS_FILE = BASE_DIR / "learnings.json"
 with open(CONFIG_FILE) as f:
     CONFIG = json.load(f)
 
-# Trader colors — must match portfolio_manager.py
+# Trader identities — must match portfolio_manager.py
 TRADER_COLORS = {
-    "momentum_1": "#3b82f6",
-    "momentum_2": "#8b5cf6",
-    "breakout_1": "#f97316",
-    "scalper_1":  "#22c55e",
-    "reverter_1": "#ec4899",
+    "blitz":    "#3b82f6",   # blue
+    "phantom":  "#8b5cf6",   # purple
+    "maverick": "#f97316",   # orange
+    "viper":    "#22c55e",   # green
+    "ghost":    "#ec4899",   # pink
+}
+
+TRADER_NAMES = {
+    "blitz":    "BLITZ",
+    "phantom":  "PHANTOM",
+    "maverick": "MAVERICK",
+    "viper":    "VIPER",
+    "ghost":    "GHOST",
 }
 
 
@@ -108,6 +116,7 @@ async def api_data(request):
 
         scoreboard.append({
             "trader_id": tid,
+            "name": TRADER_NAMES.get(tid, tid.upper()),
             "style": style,
             "color": TRADER_COLORS.get(tid, "#64748b"),
             "equity": round(total, 2),
@@ -131,6 +140,7 @@ async def api_data(request):
     for tid in _trader_equity:
         datasets.append({
             "trader_id": tid,
+            "name": TRADER_NAMES.get(tid, tid.upper()),
             "color": TRADER_COLORS.get(tid, "#64748b"),
             "points": _trader_equity[tid],
         })
@@ -358,7 +368,7 @@ function renderChart(chartData) {
   if (!ctx) return;
 
   const datasets = chartData.datasets.map(ds => ({
-    label: ds.trader_id,
+    label: ds.name || ds.trader_id,
     data: ds.points,
     borderColor: ds.color,
     borderWidth: 2.5,
@@ -408,7 +418,7 @@ function renderChart(chartData) {
               return new Date(items[0].parsed.x).toLocaleTimeString();
             },
             label: function(item) {
-              return item.dataset.label + ': $' + item.parsed.y.toFixed(2);
+              return item.dataset.label + ':  $' + item.parsed.y.toFixed(2);
             },
           },
         },
@@ -449,7 +459,7 @@ function renderScoreboard(scoreboard) {
         <td class="rank-medal">${rankLabel}</td>
         <td>
           <span class="trader-color" style="background:${b.color};"></span>
-          ${b.trader_id}
+          <strong>${b.name}</strong>
         </td>
         <td style="color:var(--text-dim);">${b.style}</td>
         <td class="equity-big">$${fmt(b.equity)}</td>
@@ -498,7 +508,9 @@ function render(d) {
     posGrid.innerHTML = '<div style="padding:20px;color:var(--text-dim);text-align:center;">No positions yet — deploying capital...</div>';
   } else {
     posGrid.innerHTML = d.positions.map(p => {
-      const color = d.scoreboard.find(s => s.trader_id === p.trader_id)?.color || '#64748b';
+      const trader = d.scoreboard.find(s => s.trader_id === p.trader_id);
+      const color = trader?.color || '#64748b';
+      const tname = trader?.name || p.trader_id;
       return `
         <div class="pos-item">
           <span>
@@ -508,7 +520,7 @@ function render(d) {
           </span>
           <span>
             <span style="color:var(--text-dim);">M:</span>$${fmt(p.margin)}
-            <span style="color:var(--text-dim);margin-left:8px;">[${p.trader_id}]</span>
+            <span style="color:${color};margin-left:8px;font-weight:600;">${tname}</span>
           </span>
         </div>
       `;

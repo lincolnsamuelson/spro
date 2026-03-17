@@ -21,11 +21,11 @@ from dashboard import Dashboard
 
 # 5 competitors — each starts with $50, same rules, different strategies
 TRADER_POOL = [
-    {"id": "momentum_1",  "style": "momentum_chaser", "max_pos": 5},
-    {"id": "momentum_2",  "style": "momentum_chaser", "max_pos": 5},
-    {"id": "breakout_1",  "style": "breakout_hunter",  "max_pos": 4},
-    {"id": "scalper_1",   "style": "scalper",           "max_pos": 6},
-    {"id": "reverter_1",  "style": "mean_reverter",     "max_pos": 4},
+    {"id": "blitz",    "style": "momentum_chaser", "max_pos": 5},
+    {"id": "phantom",  "style": "momentum_chaser", "max_pos": 5},
+    {"id": "maverick", "style": "breakout_hunter",  "max_pos": 4},
+    {"id": "viper",    "style": "scalper",           "max_pos": 6},
+    {"id": "ghost",    "style": "mean_reverter",     "max_pos": 4},
 ]
 
 
