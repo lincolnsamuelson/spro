@@ -1,61 +1,61 @@
 from __future__ import annotations
 import asyncio
 import time
+import hashlib
 from collections import defaultdict
 from models import Event, EventType, Side
 from event_bus import EventBus
 
 
-# Strategy style configurations
+# Strategy style configurations — more differentiated
 STYLE_WEIGHTS = {
     "momentum_chaser": {
-        "rsi": 0.10, "macd": 0.15, "bollinger": 0.10, "ema_crossover": 0.05,
-        "sentiment": 0.02, "momentum": 0.35, "volatility": 0.15,
-        "order_flow": 0.05, "correlation": 0.03,
+        "rsi": 0.05, "macd": 0.10, "bollinger": 0.05, "ema_crossover": 0.03,
+        "sentiment": 0.02, "momentum": 0.45, "volatility": 0.20,
+        "order_flow": 0.05, "correlation": 0.05,
     },
     "breakout_hunter": {
-        "rsi": 0.10, "macd": 0.15, "bollinger": 0.15, "ema_crossover": 0.10,
-        "sentiment": 0.03, "momentum": 0.25, "volatility": 0.15,
-        "order_flow": 0.04, "correlation": 0.03,
+        "rsi": 0.05, "macd": 0.20, "bollinger": 0.20, "ema_crossover": 0.15,
+        "sentiment": 0.02, "momentum": 0.15, "volatility": 0.10,
+        "order_flow": 0.08, "correlation": 0.05,
     },
     "scalper": {
-        "rsi": 0.15, "macd": 0.20, "bollinger": 0.15, "ema_crossover": 0.10,
-        "sentiment": 0.02, "momentum": 0.20, "volatility": 0.10,
-        "order_flow": 0.05, "correlation": 0.03,
+        "rsi": 0.20, "macd": 0.25, "bollinger": 0.10, "ema_crossover": 0.15,
+        "sentiment": 0.01, "momentum": 0.15, "volatility": 0.05,
+        "order_flow": 0.06, "correlation": 0.03,
     },
     "mean_reverter": {
-        "rsi": 0.25, "macd": 0.15, "bollinger": 0.25, "ema_crossover": 0.10,
-        "sentiment": 0.05, "momentum": 0.05, "volatility": 0.10,
-        "order_flow": 0.03, "correlation": 0.02,
+        "rsi": 0.35, "macd": 0.10, "bollinger": 0.30, "ema_crossover": 0.05,
+        "sentiment": 0.05, "momentum": 0.02, "volatility": 0.05,
+        "order_flow": 0.03, "correlation": 0.05,
     },
     "sentiment_rider": {
-        "rsi": 0.10, "macd": 0.10, "bollinger": 0.10, "ema_crossover": 0.05,
-        "sentiment": 0.25, "momentum": 0.15, "volatility": 0.10,
-        "order_flow": 0.05, "correlation": 0.10,
+        "rsi": 0.05, "macd": 0.08, "bollinger": 0.08, "ema_crossover": 0.04,
+        "sentiment": 0.35, "momentum": 0.10, "volatility": 0.10,
+        "order_flow": 0.05, "correlation": 0.15,
     },
 }
 
 STYLE_COOLDOWNS = {
     "momentum_chaser": 3,
-    "breakout_hunter": 5,
-    "scalper": 2,
-    "mean_reverter": 10,
-    "sentiment_rider": 8,
+    "breakout_hunter": 8,
+    "scalper": 1,
+    "mean_reverter": 15,
+    "sentiment_rider": 10,
 }
 
 STYLE_THRESHOLDS = {
-    "momentum_chaser": 0.25,
-    "breakout_hunter": 0.28,
-    "scalper": 0.22,
-    "mean_reverter": 0.30,
+    "momentum_chaser": 0.22,
+    "breakout_hunter": 0.30,
+    "scalper": 0.18,
+    "mean_reverter": 0.35,
     "sentiment_rider": 0.28,
 }
 
 
 class TraderAgent:
-    """Independent trader with its own capital slice, strategy style, and
-    decision-making. Each trader receives signals from the router and
-    independently decides whether to trade."""
+    """Competitive trader that watches rivals, avoids herding, and
+    learns from others' losses to make independent decisions."""
 
     def __init__(self, trader_id: str, bus: EventBus, config: dict,
                  portfolio_mgr, style: str, capital: float, max_positions: int):
@@ -71,6 +71,10 @@ class TraderAgent:
         self.weights = dict(STYLE_WEIGHTS.get(style, STYLE_WEIGHTS["momentum_chaser"]))
         self.cooldown = STYLE_COOLDOWNS.get(style, 5)
         self.threshold = STYLE_THRESHOLDS.get(style, 0.28)
+
+        # Coin preference seed — each trader naturally prefers different coins
+        # based on hash of their ID, so they don't all pile into the same ones
+        self._coin_seed = int(hashlib.md5(trader_id.encode()).hexdigest()[:8], 16)
 
         # Signal accumulation
         self.signals: dict[str, dict] = defaultdict(dict)
@@ -132,7 +136,6 @@ class TraderAgent:
 
     def _on_fired(self, payload: dict):
         """I got FIRED. Reset my brain, apply all learnings, start fresh."""
-        # Clear all state
         self.signals.clear()
         self.last_trade_signal.clear()
         self.my_positions.clear()
@@ -140,17 +143,11 @@ class TraderAgent:
         self.compound_multiplier = 1.0
         self.trades_sent = 0
         self.signals_received = 0
-
-        # Reset weights to base style (fresh start)
         self.weights = dict(STYLE_WEIGHTS.get(self.style, STYLE_WEIGHTS["momentum_chaser"]))
         self.cooldown = STYLE_COOLDOWNS.get(self.style, 5)
         self.threshold = STYLE_THRESHOLDS.get(self.style, 0.28)
 
-        # But KEEP all learned intelligence (blacklist, probation, etc.)
-        # The new agent inherits all lessons from the evaluator
-
     def _on_portfolio_update(self, payload: dict):
-        # Update my view of which positions I own
         my_syms = set()
         for sym, pos_data in payload.get("positions", {}).items():
             if pos_data.get("trader_id") == self.trader_id:
@@ -166,6 +163,86 @@ class TraderAgent:
                 self.my_positions.add(symbol)
             elif payload.get("side") == "SELL":
                 self.my_positions.discard(symbol)
+
+    # ─── COMPETITIVE INTELLIGENCE ───
+
+    def _get_rival_intel(self, symbol: str) -> dict:
+        """Look at what other traders are doing with this coin."""
+        holders = 0          # how many rivals hold this coin
+        losing_holders = 0   # how many of those are losing money on it
+        winning_holders = 0  # how many are profiting
+        worst_rival_pnl = 0.0
+        best_rival_pnl = 0.0
+        losing_trader_count = 0  # how many rivals are losing overall (not just this coin)
+
+        for tid, t_state in self.portfolio_mgr.traders.items():
+            if tid == self.trader_id:
+                continue
+            # Is this rival losing overall?
+            if t_state.total_value < t_state.starting_cash * 0.98:
+                losing_trader_count += 1
+            # Does this rival hold the coin?
+            if symbol in t_state.positions:
+                holders += 1
+                pos = t_state.positions[symbol]
+                if pos.unrealized_pnl > 0:
+                    winning_holders += 1
+                    best_rival_pnl = max(best_rival_pnl, pos.unrealized_pnl)
+                else:
+                    losing_holders += 1
+                    worst_rival_pnl = min(worst_rival_pnl, pos.unrealized_pnl)
+
+        return {
+            "holders": holders,
+            "losing_holders": losing_holders,
+            "winning_holders": winning_holders,
+            "worst_rival_pnl": worst_rival_pnl,
+            "best_rival_pnl": best_rival_pnl,
+            "losing_trader_count": losing_trader_count,
+        }
+
+    def _coin_affinity(self, symbol: str) -> float:
+        """Each trader has a unique preference for different coins based on
+        their ID hash. Returns 0.0-1.0 affinity score."""
+        sym_hash = int(hashlib.md5(symbol.encode()).hexdigest()[:8], 16)
+        combined = (self._coin_seed ^ sym_hash) % 1000
+        return combined / 1000.0
+
+    def _competitive_score_adjust(self, symbol: str, base_score: float) -> float:
+        """Adjust a signal score based on competitive intelligence."""
+        intel = self._get_rival_intel(symbol)
+        score = base_score
+
+        # ANTI-HERDING: If 2+ rivals already hold this coin, big penalty
+        # Don't pile in where everyone else already is
+        if intel["holders"] >= 2:
+            score -= 0.15 * intel["holders"]
+
+        # AVOID LOSERS' PICKS: If losing rivals hold this coin, stay away
+        if intel["losing_holders"] > 0:
+            score -= 0.10 * intel["losing_holders"]
+
+        # CONTRARIAN BONUS: If a coin is being held by losers with bad P&L,
+        # the mean_reverter might actually want to short it
+        if self.style == "mean_reverter" and intel["losing_holders"] >= 2:
+            score += 0.05  # slight contrarian interest
+
+        # WINNER AWARENESS: If the top-performing rival is profiting on this
+        # coin, small boost (follow the leader, but not too aggressively)
+        if intel["winning_holders"] > 0 and intel["losing_holders"] == 0:
+            score += 0.05
+
+        # COIN AFFINITY: Natural preference based on trader identity
+        # This ensures traders gravitate to different coins
+        affinity = self._coin_affinity(symbol)
+        if affinity > 0.6:
+            score += 0.08  # prefer this coin
+        elif affinity < 0.3:
+            score -= 0.08  # avoid this coin (let others have it)
+
+        return score
+
+    # ─── SIGNAL PROCESSING ───
 
     async def _signal_loop(self):
         while True:
@@ -188,7 +265,6 @@ class TraderAgent:
                 self.latest_prices[event.payload["symbol"]] = event.payload["price"]
                 continue
 
-            # Process researcher signal
             symbol = event.payload.get("symbol", "")
             if not symbol:
                 continue
@@ -196,7 +272,6 @@ class TraderAgent:
             indicator = event.payload.get("indicator", "")
             now = time.time()
 
-            # Map event types to indicator names
             if event.type == EventType.MOMENTUM_SIGNAL:
                 indicator = "momentum"
             elif event.type == EventType.VOLATILITY_RANKING:
@@ -218,24 +293,24 @@ class TraderAgent:
                 now,
             )
 
-            # Momentum fast-track for momentum_chaser and breakout_hunter
+            # Momentum fast-track for momentum styles only
             if (event.type == EventType.MOMENTUM_SIGNAL and
-                    self.style in ("momentum_chaser", "breakout_hunter") and
-                    event.payload.get("strength", 0) >= 0.6):
+                    self.style == "momentum_chaser" and
+                    event.payload.get("strength", 0) >= 0.65):
                 last = self.last_trade_signal.get(symbol, 0)
                 if now - last >= self.cooldown:
                     direction = Side.BUY if event.payload["direction"] == "buy" else Side.SELL
                     confidence = event.payload["strength"]
+                    confidence = self._competitive_score_adjust(symbol, confidence)
                     if self._is_on_probation(symbol):
                         confidence *= 0.6
                     confidence -= self._get_combo_penalty(symbol)
-                    if confidence >= 0.2:
+                    if confidence >= self.threshold:
                         leverage = self._get_leverage(symbol)
                         await self._emit_trade(symbol, direction, confidence, leverage)
                         self.last_trade_signal[symbol] = now
-                        return
 
-            # Normal signal evaluation
+            # Normal evaluation
             last = self.last_trade_signal.get(symbol, 0)
             if now - last < self.cooldown:
                 continue
@@ -269,7 +344,6 @@ class TraderAgent:
         sell_score = 0.0
         total_weight = 0.0
 
-        # Expire old signals
         expired = [k for k, v in self.signals[symbol].items() if now - v[2] > 60]
         for k in expired:
             del self.signals[symbol][k]
@@ -288,6 +362,10 @@ class TraderAgent:
 
         buy_score /= total_weight
         sell_score /= total_weight
+
+        # Apply competitive intelligence
+        buy_score = self._competitive_score_adjust(symbol, buy_score)
+        sell_score = self._competitive_score_adjust(symbol, sell_score)
 
         if self._is_on_probation(symbol):
             buy_score *= 0.6
@@ -312,18 +390,15 @@ class TraderAgent:
             return
 
         if direction == Side.BUY:
-            # Check if I already hold or am pending this symbol
             if symbol in self.my_positions or symbol in self.pending_symbols:
                 return
             if len(self.my_positions) + len(self.pending_symbols) >= self.max_positions:
                 return
 
-            # Read MY cash from the portfolio manager
             my_state = self.portfolio_mgr.traders.get(self.trader_id)
             if not my_state:
                 return
             available = my_state.cash - 0.01
-            # Position sizing: spread across max positions
             margin = available / max(self.max_positions - len(self.my_positions) - len(self.pending_symbols), 1)
             margin = min(margin, available)
             if margin < 0.10:
@@ -340,7 +415,7 @@ class TraderAgent:
                 payload={
                     "symbol": symbol,
                     "side": direction.value,
-                    "quantity": 0,  # Calculated by portfolio manager
+                    "quantity": 0,
                     "margin": round(margin, 4),
                     "price": price,
                     "confidence": round(confidence, 4),
@@ -374,7 +449,7 @@ class TraderAgent:
             ))
 
     async def _deploy_idle_cash(self):
-        """Deploy idle cash into best available coins — NEVER hold cash."""
+        """Deploy idle cash — NEVER hold cash. Use competitive intel to pick coins."""
         now = time.time()
         my_state = self.portfolio_mgr.traders.get(self.trader_id)
         if not my_state:
@@ -383,7 +458,6 @@ class TraderAgent:
         if available < 0.05:
             return
 
-        # How many more positions can I take?
         current_count = len(self.my_positions) + len(self.pending_symbols)
         slots = self.max_positions - current_count
         if slots <= 0:
@@ -413,16 +487,25 @@ class TraderAgent:
 
             if total_weight > 0:
                 buy_score /= total_weight
+                # Apply competitive intelligence
+                buy_score = self._competitive_score_adjust(symbol, buy_score)
                 if buy_score > 0.05:
                     leverage = self._get_leverage(symbol)
                     candidates.append((symbol, buy_score, leverage))
 
         if not candidates:
-            # Fallback: any coin with price data — never sit idle
-            for sym in self.latest_prices:
+            # Fallback: coins with price data, but prefer MY coins (affinity)
+            all_syms = list(self.latest_prices.keys())
+            # Sort by affinity so each trader picks different fallback coins
+            all_syms.sort(key=lambda s: self._coin_affinity(s), reverse=True)
+            for sym in all_syms:
                 if (sym not in self.my_positions and
                         sym not in self.pending_symbols and
                         not self._is_blocked(sym)):
+                    intel = self._get_rival_intel(sym)
+                    # Skip coins where 2+ rivals already are
+                    if intel["holders"] >= 2:
+                        continue
                     lev = self._get_leverage(sym)
                     candidates.append((sym, 0.3, lev))
                     if len(candidates) >= slots:
@@ -438,7 +521,6 @@ class TraderAgent:
             self.last_trade_signal[symbol] = now
 
     def _apply_adjustment(self, payload: dict):
-        # Weight adjustments
         adjustments = payload.get("weight_adjustments", {})
         for ind, adj in adjustments.items():
             if ind in self.weights:

@@ -16,8 +16,8 @@
     ],
     "starting_balance": 200.0,
     "mode": "paper",
-    "default_leverage": 15,
-    "max_leverage": 25
+    "default_leverage": 75,
+    "max_leverage": 125
   },
   "market_data": {
     "poll_interval_seconds": 15,
