@@ -74,15 +74,13 @@ class RiskManager:
 
         if direction == Side.BUY.value:
             available_cash = self.portfolio.cash - self.min_cash
-            if available_cash < 0.50:
+            if available_cash < 0.10:
                 return
 
-            # Aggressive sizing: deploy large % of available cash per trade
-            # Scale by confidence and compounding multiplier
-            base_size = available_cash * self.risk_cfg["max_risk_per_trade"]
-            position_margin = base_size * confidence * multiplier
-            position_margin = min(position_margin, available_cash)
-            if position_margin < 0.50:
+            # FULL DEPLOYMENT: use all available cash as margin
+            # No holding back — every dollar should be working
+            position_margin = available_cash
+            if position_margin < 0.10:
                 return
 
             # With leverage, notional value is margin * leverage

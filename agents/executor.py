@@ -140,10 +140,10 @@ class Executor:
             fill_price = price * (1 + self.slippage)
             margin = payload.get("margin", 0)
 
-            if margin > self.portfolio.cash - 0.10:
-                margin = self.portfolio.cash - 0.10
+            if margin > self.portfolio.cash - 0.01:
+                margin = self.portfolio.cash - 0.01
 
-            if margin < 0.50:
+            if margin < 0.10:
                 return
 
             # Leveraged quantity

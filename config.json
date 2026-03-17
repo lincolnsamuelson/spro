@@ -54,7 +54,7 @@
     "default_stop_loss_pct": 0.02,
     "trailing_stop_pct": 0.015,
     "simulated_slippage_pct": 0.001,
-    "min_cash_reserve": 0.10
+    "min_cash_reserve": 0.01
   },
   "volatility": {
     "lookback_periods": 20,
